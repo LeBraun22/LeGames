@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LeGames — Browse</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  .hero {
+    padding: 64px 28px 40px;
+    max-width: 1180px;
+    margin: 0 auto;
+  }
+  .hero h1 {
+    font-size: clamp(32px, 5vw, 52px);
+    line-height: 1.05;
+    margin: 18px 0 12px;
+    max-width: 780px;
+  }
+  .hero h1 span { color: var(--accent); }
+  .hero p { color: var(--text-dim); max-width: 560px; font-size: 16px; margin: 0 0 26px; }
+  .hero-actions { display: flex; gap: 12px; }
+
+  .section { max-width: 1180px; margin: 0 auto; padding: 10px 28px 80px; }
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; }
+  .section-head h2 { font-size: 20px; margin: 0; }
+  .section-head .count { color: var(--text-dim); font-family: var(--mono); font-size: 13px; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+    gap: 18px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--panel-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    text-decoration: none;
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    transition: transform .15s ease, border-color .15s ease;
+  }
+  .card:hover { transform: translateY(-3px); border-color: var(--accent-dim); }
+  .thumb {
+    height: 140px;
+    position: relative;
+    background:
+      linear-gradient(180deg, rgba(79,209,255,.12), transparent 60%),
+      repeating-linear-gradient(45deg, #171c29 0 12px, #141824 12px 24px);
+  }
+  .thumb .peak {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 60%;
+    background: linear-gradient(180deg, transparent, var(--accent-dim) 220%);
+    clip-path: polygon(0% 100%, 12% 55%, 24% 80%, 38% 40%, 52% 70%, 66% 30%, 80% 65%, 100% 45%, 100% 100%);
+    opacity: .55;
+  }
+  .card-body { padding: 14px 16px 16px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
+  .card-body h3 { margin: 0; font-size: 16px; }
+  .card-body p { margin: 0; font-size: 13px; color: var(--text-dim); line-height: 1.4; flex: 1; }
+  .card-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+  .play-pill {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--accent); border: 1px solid var(--accent-dim); padding: 3px 8px; border-radius: 100px;
+  }
+  .empty { color: var(--text-dim); font-family: var(--mono); font-size: 14px; padding: 40px 0; }
+</style>
+</head>
+<body class="dot-bg">
+  <header class="topbar">
+    <div class="logo"><span class="le">le</span><span class="games">games</span><span class="cursor">_</span></div>
+    <nav class="nav-links">
+      <a href="/" class="active">Browse</a>
+      <a href="/studio.html">Studio</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <span class="scanline-tag">alpha build</span>
+    <h1>Build a world. <span>Ship it live.</span> Play it together.</h1>
+    <p>LeGames is a browser-native game engine: sculpt terrain and place objects in Studio, publish in one click, and jump into real multiplayer sessions with anyone who has the link.</p>
+    <div class="hero-actions">
+      <a href="/studio.html"><button class="btn-primary">Open Studio</button></a>
+      <a href="#games"><button class="btn-ghost">Browse games ↓</button></a>
+    </div>
+  </section>
+
+  <section class="section" id="games">
+    <div class="section-head">
+      <h2>Published worlds</h2>
+      <span class="count" id="count">loading…</span>
+    </div>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <script>
+    async function load() {
+      const grid = document.getElementById('grid');
+      const count = document.getElementById('count');
+      try {
+        const res = await fetch('/api/games');
+        const games = await res.json();
+        count.textContent = games.length + (games.length === 1 ? ' game' : ' games');
+        if (games.length === 0) {
+          grid.innerHTML = '<div class="empty">No games published yet. Open Studio and publish the first one.</div>';
+          return;
+        }
+        grid.innerHTML = games
+          .sort((a, b) => b.createdAt - a.createdAt)
+          .map(g => `
+            <a class="card" href="/play.html?id=${g.id}">
+              <div class="thumb"><div class="peak"></div></div>
+              <div class="card-body">
+                <h3>${escapeHtml(g.name)}</h3>
+                <p>${escapeHtml(g.description || 'No description yet.')}</p>
+                <div class="card-meta">
+                  <span>by ${escapeHtml(g.author || 'Anonymous')}</span>
+                  <span class="play-pill">Play ▶</span>
+                </div>
+              </div>
+            </a>
+          `).join('');
+      } catch (e) {
+        count.textContent = '';
+        grid.innerHTML = '<div class="empty">Could not reach the LeGames server. Is it running?</div>';
+      }
+    }
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
+    }
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LeGames — Play</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  body, html { height: 100%; margin: 0; overflow: hidden; }
+  #game-root { position: relative; width: 100%; height: 100%; }
+  canvas { display: block; }
+
+  .hud-top {
+    position: absolute; top: 0; left: 0; right: 0; display: flex; justify-content: space-between;
+    align-items: flex-start; padding: 14px 18px; pointer-events: none; z-index: 10;
+    background: linear-gradient(180deg, rgba(0,0,0,.45), transparent);
+  }
+  .hud-title { font-family: var(--mono); font-size: 13px; color: #fff; }
+  .hud-title b { color: var(--accent); }
+  .hud-stats { display: flex; gap: 10px; }
+  .pill { font-family: var(--mono); font-size: 12px; background: rgba(10,12,18,.65); border: 1px solid var(--panel-border); padding: 6px 12px; border-radius: 100px; color: #fff; }
+  .pill.coins { color: var(--accent2); }
+  .back-link { pointer-events: all; text-decoration: none; }
+
+  .crosshair {
+    position: absolute; top: 50%; left: 50%; width: 6px; height: 6px; margin: -3px;
+    border: 1.5px solid rgba(255,255,255,.8); border-radius: 50%; pointer-events: none; z-index: 10;
+  }
+
+  .lock-hint {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; flex-direction: column;
+    background: rgba(5,7,12,.75); z-index: 30; text-align: center; gap: 14px;
+  }
+  .lock-hint h2 { margin: 0; font-size: 22px; }
+  .lock-hint p { color: var(--text-dim); margin: 0; max-width: 380px; font-size: 14px; line-height: 1.6; }
+  .name-input { padding: 10px 14px; font-size: 14px; width: 220px; text-align: center; }
+
+  .chat-box {
+    position: absolute; bottom: 14px; left: 14px; width: 320px; max-height: 180px;
+    display: flex; flex-direction: column; z-index: 10;
+  }
+  .chat-log { overflow-y: auto; font-size: 12px; font-family: var(--mono); color: #fff; margin-bottom: 6px; display: flex; flex-direction: column-reverse; gap: 3px; max-height: 140px; }
+  .chat-log div span { color: var(--accent); }
+  .chat-input {
+    display: none; gap: 6px;
+  }
+  .chat-input.show { display: flex; }
+  .chat-input input { flex: 1; }
+
+  .players-list {
+    position: absolute; top: 60px; right: 14px; z-index: 10; display: flex; flex-direction: column; gap: 6px; align-items: flex-end;
+  }
+  .player-chip { font-family: var(--mono); font-size: 11px; background: rgba(10,12,18,.6); border-radius: 100px; padding: 4px 10px; display: flex; align-items: center; gap: 6px; color: #fff; }
+  .player-chip .dot { width: 8px; height: 8px; border-radius: 50%; }
+
+  .controls-hint {
+    position: absolute; bottom: 14px; right: 14px; font-family: var(--mono); font-size: 11px; color: var(--text-dim);
+    background: rgba(10,12,18,.6); padding: 8px 12px; border-radius: 8px; z-index: 10; line-height: 1.6; text-align: right;
+  }
+</style>
+</head>
+<body>
+  <div id="game-root">
+    <div class="hud-top">
+      <a class="back-link" href="/"><span class="pill">← Browse</span></a>
+      <div class="hud-stats">
+        <span class="pill coins" id="coinCount">◆ 0</span>
+        <span class="pill" id="gameTitle">loading…</span>
+      </div>
+    </div>
+    <div class="crosshair"></div>
+    <div class="players-list" id="playersList"></div>
+    <div class="chat-box">
+      <div class="chat-log" id="chatLog"></div>
+      <div class="chat-input" id="chatInput">
+        <input type="text" id="chatText" maxlength="200" placeholder="Say something… (Enter to send, Esc to close)">
+      </div>
+    </div>
+    <div class="controls-hint">WASD move · Space jump · Mouse look (click to lock) · T chat</div>
+
+    <div class="lock-hint" id="lockHint">
+      <span class="scanline-tag">live multiplayer</span>
+      <h2 id="lockTitle">Loading world…</h2>
+      <p id="lockDesc">Getting things ready.</p>
+      <input type="text" class="name-input" id="playerName" placeholder="Your player name" maxlength="20">
+      <button class="btn-primary" id="enterBtn">Click to play</button>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="/js/play.js"></script>
+</body>
+</html>

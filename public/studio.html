@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LeGames Studio</title>
+<link rel="stylesheet" href="/css/style.css">
+<style>
+  body { display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+  .studio-topbar { padding: 10px 20px; }
+  .studio-body { flex: 1; display: grid; grid-template-columns: 220px 1fr 260px; min-height: 0; }
+
+  .panel-col { background: var(--bg-raised); border-right: 1px solid var(--panel-border); padding: 14px; overflow-y: auto; }
+  .panel-col.right { border-right: none; border-left: 1px solid var(--panel-border); }
+
+  .tool-group { margin-bottom: 18px; }
+  .tool-group h4 { margin: 0 0 8px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--text-dim); }
+  .tool-btn {
+    display: flex; align-items: center; gap: 8px;
+    width: 100%; text-align: left; padding: 9px 10px; margin-bottom: 6px;
+    background: var(--panel); border: 1px solid var(--panel-border); color: var(--text); font-size: 13px; border-radius: 7px;
+  }
+  .tool-btn:hover { border-color: var(--accent-dim); }
+  .tool-btn.active { background: var(--accent); color: #05131a; border-color: var(--accent); }
+  .swatch { width: 10px; height: 10px; border-radius: 3px; display: inline-block; }
+
+  .field { margin-bottom: 10px; }
+  .field label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
+  .field input[type=text], .field textarea, .field select { width: 100%; }
+  .field textarea { resize: vertical; min-height: 50px; }
+  .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
+  .row3 input { width: 100%; padding: 6px; font-size: 12px; }
+  .range-row { display: flex; align-items: center; gap: 8px; }
+  .range-row input[type=range] { flex: 1; }
+
+  #viewport { position: relative; background: #05070c; }
+  #viewport canvas { display: block; }
+  .hint {
+    position: absolute; left: 14px; bottom: 14px; font-family: var(--mono); font-size: 12px;
+    color: var(--text-dim); background: rgba(10,12,18,.7); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--panel-border);
+    max-width: 320px; line-height: 1.5;
+  }
+  .brush-size { position: absolute; top: 14px; left: 14px; background: rgba(10,12,18,.7); border: 1px solid var(--panel-border); border-radius: 8px; padding: 8px 12px; }
+
+  .toast {
+    position: fixed; top: 70px; left: 50%; transform: translateX(-50%);
+    background: var(--panel); border: 1px solid var(--ok); color: var(--ok);
+    padding: 10px 18px; border-radius: 8px; font-family: var(--mono); font-size: 13px;
+    opacity: 0; pointer-events: none; transition: opacity .25s ease; z-index: 100;
+  }
+  .toast.show { opacity: 1; }
+
+  .no-select-msg { color: var(--text-dim); font-size: 13px; font-family: var(--mono); }
+  .prop-title { font-size: 13px; font-weight: 600; margin-bottom: 10px; display: flex; align-items: center; gap: 8px; }
+  .delete-btn { background: transparent; color: var(--danger); border: 1px solid var(--danger); padding: 7px; width: 100%; font-size: 12px; margin-top: 6px; }
+</style>
+</head>
+<body>
+  <header class="topbar studio-topbar">
+    <div class="logo"><span class="le">le</span><span class="games">games</span><span class="cursor">_</span> <span style="color:var(--text-dim);font-size:13px;margin-left:8px;">/ studio</span></div>
+    <nav class="nav-links">
+      <a href="/">Browse</a>
+      <a href="/studio.html" class="active">Studio</a>
+    </nav>
+  </header>
+
+  <div class="studio-body">
+    <!-- LEFT: tools -->
+    <div class="panel-col">
+      <div class="tool-group">
+        <h4>Terrain</h4>
+        <button class="tool-btn active" data-tool="select">◎ Select / Move</button>
+        <button class="tool-btn" data-tool="raise">▲ Raise Terrain</button>
+        <button class="tool-btn" data-tool="lower">▼ Lower Terrain</button>
+        <div class="range-row" style="margin-top:8px;">
+          <label style="font-size:11px;color:var(--text-dim);white-space:nowrap;">Brush</label>
+          <input type="range" id="brushSize" min="1" max="8" value="3">
+        </div>
+        <button class="btn-ghost" id="genTerrain" style="width:100%;margin-top:8px;font-size:12px;padding:8px;">⟳ Generate hills</button>
+        <button class="btn-ghost" id="flattenTerrain" style="width:100%;margin-top:6px;font-size:12px;padding:8px;">▁ Flatten</button>
+      </div>
+      <div class="tool-group">
+        <h4>Place object</h4>
+        <button class="tool-btn" data-place="box"><span class="swatch" style="background:#4fd1ff"></span> Block</button>
+        <button class="tool-btn" data-place="ramp"><span class="swatch" style="background:#ff8a4f"></span> Ramp</button>
+        <button class="tool-btn" data-place="spawn"><span class="swatch" style="background:#6bffa0"></span> Spawn Point</button>
+        <button class="tool-btn" data-place="coin"><span class="swatch" style="background:#ffd54f"></span> Coin</button>
+        <button class="tool-btn" data-place="killzone"><span class="swatch" style="background:#ff4f6d"></span> Kill Zone</button>
+      </div>
+      <div class="tool-group">
+        <h4>World</h4>
+        <div class="field">
+          <label>Grid size</label>
+          <select id="worldSize">
+            <option value="32">Small (32)</option>
+            <option value="48" selected>Medium (48)</option>
+            <option value="64">Large (64)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- CENTER: viewport -->
+    <div id="viewport">
+      <div class="brush-size" id="brushLabel" style="display:none;">Brush radius: <span id="brushVal">3</span></div>
+      <div class="hint">Drag = orbit · Scroll = zoom · Click terrain with Raise/Lower active to sculpt · Click ground with a Place tool active to drop an object</div>
+    </div>
+
+    <!-- RIGHT: inspector + publish -->
+    <div class="panel-col right">
+      <div class="tool-group">
+        <h4>Game info</h4>
+        <div class="field"><label>Name</label><input type="text" id="gameName" placeholder="My Awesome World"></div>
+        <div class="field"><label>Description</label><textarea id="gameDesc" placeholder="What is this game about?"></textarea></div>
+        <div class="field"><label>Author</label><input type="text" id="gameAuthor" placeholder="Your name"></div>
+        <button class="btn-primary" id="publishBtn" style="width:100%;">Publish game ▶</button>
+      </div>
+      <div class="tool-group">
+        <h4>Selected object</h4>
+        <div id="inspector"><div class="no-select-msg">Nothing selected</div></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+    }
+  }
+  </script>
+  <script type="module" src="/js/studio.js"></script>
+</body>
+</html>
