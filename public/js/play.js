@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { buildTerrainMesh, buildObjectMesh, terrainHeightAt } from './shared.js';
+import { buildTerrainMesh, buildObjectMesh, terrainHeightAt, buildRampHeightGrid, queryRampHeight } from './shared.js';
+import { fetchMe, mountAuthWidget, onAuthChange, getUser, openAuthModal } from './auth.js';
 
 const params = new URLSearchParams(location.search);
 const gameId = params.get('id');
@@ -8,6 +9,9 @@ const lockTitle = document.getElementById('lockTitle');
 const lockDesc = document.getElementById('lockDesc');
 const enterBtn = document.getElementById('enterBtn');
 const nameInput = document.getElementById('playerName');
+
+mountAuthWidget(document.getElementById('authSlot'));
+fetchMe().then(u => { if (u) nameInput.value = u.username; });
 
 if (!gameId) {
   lockTitle.textContent = 'No game selected';
@@ -25,6 +29,7 @@ fetch(`/api/games/${gameId}`)
     document.getElementById('gameTitle').textContent = g.name;
     lockTitle.textContent = g.name;
     lockDesc.textContent = g.description || 'Jump in and explore this world with other players live.';
+    setLikeUI(g.likeCount, g.liked);
     buildWorld(g);
   })
   .catch(() => {
@@ -32,6 +37,21 @@ fetch(`/api/games/${gameId}`)
     lockDesc.textContent = 'It may have been removed, or the server is unreachable.';
     enterBtn.style.display = 'none';
   });
+
+// ---------- like button ----------
+const likeBtn = document.getElementById('likeBtn');
+function setLikeUI(count, liked) {
+  likeBtn.textContent = `${liked ? '♥' : '♡'} ${count}`;
+  likeBtn.classList.toggle('liked', !!liked);
+}
+likeBtn.addEventListener('click', async () => {
+  if (!gameId) return;
+  if (!getUser()) { openAuthModal('login', () => likeBtn.click()); return; }
+  const res = await fetch(`/api/games/${gameId}/like`, { method: 'POST' });
+  if (!res.ok) return;
+  const data = await res.json();
+  setLikeUI(data.likeCount, data.liked);
+});
 
 // ---------- three.js world ----------
 const root = document.getElementById('game-root');
@@ -65,9 +85,14 @@ sun.shadow.camera.top = 100; sun.shadow.camera.bottom = -100;
 scene.add(sun);
 
 let terrain = null, terrainScale = 2;
-const colliders = []; // {x,z,sx,sz,y,sy,type,obj,mesh}
-let coins = []; // live coin objects {obj,mesh,taken}
+const solids = [];    // blocking box colliders {obj,x,y,z,sx,sy,sz,mesh}
+const ramps = [];     // {obj,grid,mesh}
+const killzones = []; // {obj,x,y,z,sx,sy,sz}
+const doors = new Map();   // objectId -> {obj,mesh,x,y,z,sx,sy,sz}
+const scripted = new Map(); // objectId -> {obj,x,y,z,sx,sy,sz,mesh}
+let coins = [];
 const spawns = [];
+let checkpoint = null;
 
 function buildWorld(g) {
   terrain = g.terrain;
@@ -76,24 +101,33 @@ function buildWorld(g) {
   scene.add(terrainMesh);
 
   g.objects.forEach(obj => {
-    if (obj.type === 'spawn') { spawns.push(obj); }
+    if (obj.type === 'spawn') spawns.push(obj);
     const mesh = buildObjectMesh(obj);
     scene.add(mesh);
-    if (obj.type === 'box' || obj.type === 'ramp') {
-      colliders.push({ ...boxOf(obj), type: obj.type });
+
+    const box = { obj, mesh, x: obj.x, y: obj.y, z: obj.z, sx: obj.sx || 2, sy: obj.sy || 2, sz: obj.sz || 2 };
+
+    if (obj.type === 'ramp') {
+      ramps.push({ obj, mesh, grid: buildRampHeightGrid(obj) });
     } else if (obj.type === 'killzone') {
-      colliders.push({ ...boxOf(obj), type: 'killzone' });
+      killzones.push(box);
     } else if (obj.type === 'coin') {
       coins.push({ obj, mesh, taken: false });
+    } else if (obj.type === 'box') {
+      if (obj.script?.action === 'toggle_door') {
+        doors.set(obj.id, box);
+      } else if (obj.script?.action) {
+        scripted.set(obj.id, box);
+        solids.push(box); // scripted boxes (coin/checkpoint/teleport) are still solid to stand on/bump into
+      } else {
+        solids.push(box);
+      }
     }
   });
 }
-function boxOf(obj) {
-  return { x: obj.x, z: obj.z, y: obj.y, sx: obj.sx || 2, sy: obj.sy || 2, sz: obj.sz || 2 };
-}
 
-// ---------- player avatar (local) ----------
-function makeAvatarMesh(color) {
+// ---------- player avatar ----------
+function makeAvatarMesh(color, accessory) {
   const g = new THREE.Group();
   const body = new THREE.Mesh(
     new THREE.CapsuleGeometry(0.5, 1.0, 4, 8),
@@ -102,7 +136,24 @@ function makeAvatarMesh(color) {
   body.position.y = 1.05;
   body.castShadow = true;
   g.add(body);
+  addAccessory(g, accessory);
   return g;
+}
+function addAccessory(g, accessory) {
+  if (accessory === 'hat') {
+    const hat = new THREE.Mesh(new THREE.ConeGeometry(0.45, 0.6, 12), new THREE.MeshStandardMaterial({ color: '#2b2b2b' }));
+    hat.position.y = 2.15;
+    g.add(hat);
+  } else if (accessory === 'visor') {
+    const visor = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.15, 0.15), new THREE.MeshStandardMaterial({ color: '#111', emissive: '#4fd1ff', emissiveIntensity: 0.6 }));
+    visor.position.set(0, 1.85, 0.35);
+    g.add(visor);
+  } else if (accessory === 'halo') {
+    const halo = new THREE.Mesh(new THREE.TorusGeometry(0.35, 0.05, 8, 20), new THREE.MeshStandardMaterial({ color: '#ffd54f', emissive: '#ffd54f', emissiveIntensity: 0.8 }));
+    halo.position.y = 2.25;
+    halo.rotation.x = Math.PI / 2;
+    g.add(halo);
+  }
 }
 
 function makeNameSprite(text) {
@@ -132,8 +183,17 @@ function roundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-const localAvatar = makeAvatarMesh('#4fd1ff');
+let myColor = '#4fd1ff', myAccessory = 'none';
+let localAvatar = makeAvatarMesh(myColor, myAccessory);
 scene.add(localAvatar);
+fetchMe().then(u => {
+  if (u) {
+    myColor = u.color; myAccessory = u.accessory || 'none';
+    scene.remove(localAvatar);
+    localAvatar = makeAvatarMesh(myColor, myAccessory);
+    scene.add(localAvatar);
+  }
+});
 
 // ---------- character state ----------
 const player = { x: 0, y: 10, z: 0, vy: 0, yaw: 0, grounded: false };
@@ -144,6 +204,7 @@ const JUMP_SPEED = 9.5;
 const MOVE_SPEED = 7.5;
 
 function respawn() {
+  if (checkpoint) { player.x = checkpoint.x; player.z = checkpoint.z; player.y = checkpoint.y + 2; player.vy = 0; return; }
   const s = spawns[Math.floor(Math.random() * spawns.length)];
   if (s) { player.x = s.x; player.z = s.z; player.y = (terrain ? terrainHeightAt(terrain, terrainScale, s.x, s.z) : 0) + 3; }
   else { player.x = 0; player.z = 0; player.y = 10; }
@@ -201,7 +262,7 @@ function closeChat() {
   chatInputBox.classList.remove('show');
   chatText.blur();
 }
-function logChat(name, text, self = false) {
+function logChat(name, text) {
   const div = document.createElement('div');
   div.innerHTML = `<span>${escapeHtml(name)}:</span> ${escapeHtml(text)}`;
   chatLog.prepend(div);
@@ -210,12 +271,11 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;
 
 // ---------- multiplayer ----------
 const socket = io();
-const remotePlayers = new Map(); // id -> {mesh, nameSprite, target:{x,y,z,ry}, name}
+const remotePlayers = new Map();
 const playersListEl = document.getElementById('playersList');
 
 function refreshPlayersList() {
-  const names = [document.querySelector('#playersList')];
-  playersListEl.innerHTML = `<div class="player-chip"><span class="dot" style="background:#4fd1ff"></span>you</div>` +
+  playersListEl.innerHTML = `<div class="player-chip"><span class="dot" style="background:${myColor}"></span>you</div>` +
     Array.from(remotePlayers.values()).map(p => `<div class="player-chip"><span class="dot" style="background:${p.color}"></span>${escapeHtml(p.name)}</div>`).join('');
 }
 
@@ -223,6 +283,10 @@ socket.on('roster', roster => {
   Object.entries(roster).forEach(([id, p]) => { if (id !== socket.id) addRemote(id, p); });
   refreshPlayersList();
 });
+socket.on('doors', doorMap => {
+  Object.entries(doorMap).forEach(([objId, open]) => applyDoorState(Number(objId), open));
+});
+socket.on('door-toggled', ({ objectId, open }) => applyDoorState(objectId, open));
 socket.on('player-joined', p => { addRemote(p.id, p); refreshPlayersList(); logChat('LeGames', `${p.name} joined`); });
 socket.on('player-moved', p => {
   const rp = remotePlayers.get(p.id);
@@ -230,7 +294,7 @@ socket.on('player-moved', p => {
 });
 socket.on('player-left', ({ id }) => {
   const rp = remotePlayers.get(id);
-  if (rp) { scene.remove(rp.mesh); }
+  if (rp) scene.remove(rp.mesh);
   remotePlayers.delete(id);
   refreshPlayersList();
 });
@@ -238,14 +302,21 @@ socket.on('chat', ({ name, text }) => logChat(name, text));
 
 function addRemote(id, p) {
   if (remotePlayers.has(id)) return;
-  const mesh = makeAvatarMesh(p.color || '#ff8a4f');
+  const mesh = makeAvatarMesh(p.color || '#ff8a4f', p.accessory);
   mesh.add(makeNameSprite(p.name || 'Player'));
   scene.add(mesh);
   remotePlayers.set(id, { mesh, target: p, name: p.name, color: p.color || '#ff8a4f' });
 }
 
+function applyDoorState(objectId, open) {
+  const d = doors.get(objectId);
+  if (!d) return;
+  d.open = open;
+  d.mesh.visible = !open;
+}
+
 // ---------- start ----------
-enterBtn.addEventListener('click', () => {
+enterBtn.addEventListener('click', async () => {
   if (!game) return;
   started = true;
   document.getElementById('gameTitle').textContent = game.name;
@@ -253,16 +324,37 @@ enterBtn.addEventListener('click', () => {
   camYaw = player.yaw;
   lockHint.style.display = 'none';
   renderer.domElement.requestPointerLock();
-  socket.emit('join', { gameId, name: nameInput.value.trim() || 'Player' });
+  socket.emit('join', { gameId, name: nameInput.value.trim() || 'Player', color: myColor, accessory: myAccessory });
+  fetch(`/api/games/${gameId}/play`, { method: 'POST' }).catch(() => {});
 });
 
 // ---------- collision helpers ----------
 function collidesXZ(x, z, box) {
-  const half = RADIUS;
-  return Math.abs(x - box.x) < box.sx / 2 + half && Math.abs(z - box.z) < box.sz / 2 + half;
+  return Math.abs(x - box.x) < box.sx / 2 + RADIUS && Math.abs(z - box.z) < box.sz / 2 + RADIUS;
 }
 function topOf(box) { return box.y + box.sy / 2; }
 function bottomOf(box) { return box.y - box.sy / 2; }
+
+// ---------- scripts ----------
+const scriptCooldown = new Map(); // objectId -> last-triggered time
+function runScript(box, now) {
+  const action = box.obj.script?.action;
+  if (!action) return;
+  const last = scriptCooldown.get(box.obj.id) || 0;
+  if (now - last < 900) return;
+  scriptCooldown.set(box.obj.id, now);
+  if (action === 'give_coin') {
+    coinScore++;
+    document.getElementById('coinCount').textContent = `◆ ${coinScore}`;
+  } else if (action === 'checkpoint') {
+    checkpoint = { x: box.x, y: topOf(box), z: box.z };
+    logChat('LeGames', 'Checkpoint saved');
+  } else if (action === 'teleport') {
+    const s = box.obj.script;
+    player.x = s.tx ?? box.x; player.y = (s.ty ?? topOf(box) + 2); player.z = s.tz ?? box.z;
+    player.vy = 0;
+  }
+}
 
 // ---------- main loop ----------
 const clock = new THREE.Clock();
@@ -277,7 +369,6 @@ function animate() {
     updateCoins();
   }
 
-  // remote interpolation
   remotePlayers.forEach(rp => {
     const t = rp.target;
     rp.mesh.position.lerp(new THREE.Vector3(t.x, t.y, t.z), Math.min(1, dt * 10));
@@ -309,38 +400,52 @@ function updatePlayer(dt) {
   let nx = player.x + moveX;
   let nz = player.z + moveZ;
 
-  // block movement into solid colliders (box/ramp), ignore killzone (handled as trigger)
-  for (const c of colliders) {
-    if (c.type === 'killzone') continue;
+  // block movement into solid (non-door, non-ramp) colliders
+  for (const c of solids) {
     if (collidesXZ(nx, nz, c) && player.y < topOf(c) + 0.05 && player.y > bottomOf(c) - 1.5) {
+      nx = player.x; nz = player.z;
+      break;
+    }
+  }
+  // doors block only while closed
+  for (const d of doors.values()) {
+    if (d.open) continue;
+    if (collidesXZ(nx, nz, d) && player.y < topOf(d) + 0.05 && player.y > bottomOf(d) - 1.5) {
       nx = player.x; nz = player.z;
       break;
     }
   }
   player.x = nx; player.z = nz;
 
-  // gravity + ground collision against terrain heightfield
+  // gravity + ground resolution: highest of terrain / ramp surfaces / box tops
   player.vy += GRAVITY * dt;
   let ny = player.y + player.vy * dt;
-  const groundH = terrainHeightAt(terrain, terrainScale, player.x, player.z) + RADIUS;
+  let groundH = terrainHeightAt(terrain, terrainScale, player.x, player.z) + RADIUS;
+
+  for (const r of ramps) {
+    const h = queryRampHeight(r.grid, player.x, player.z);
+    if (h !== null) groundH = Math.max(groundH, h + RADIUS);
+  }
+  for (const c of solids) {
+    if (collidesXZ(player.x, player.z, c)) {
+      const top = topOf(c) + RADIUS;
+      if (ny <= top + 0.2 && player.vy <= 0) groundH = Math.max(groundH, top);
+    }
+  }
+  for (const d of doors.values()) {
+    if (d.open) continue;
+    if (collidesXZ(player.x, player.z, d)) {
+      const top = topOf(d) + RADIUS;
+      if (ny <= top + 0.2 && player.vy <= 0) groundH = Math.max(groundH, top);
+    }
+  }
+
   if (ny <= groundH) {
     ny = groundH;
     player.vy = 0;
     player.grounded = true;
   } else {
     player.grounded = false;
-  }
-  // standing on top of a box collider
-  for (const c of colliders) {
-    if (c.type === 'killzone') continue;
-    if (collidesXZ(player.x, player.z, c)) {
-      const top = topOf(c);
-      if (ny <= top + 0.15 && ny >= top - 0.5 && player.vy <= 0) {
-        ny = top;
-        player.vy = 0;
-        player.grounded = true;
-      }
-    }
   }
   player.y = ny;
 
@@ -349,9 +454,23 @@ function updatePlayer(dt) {
     player.grounded = false;
   }
 
+  // scripted triggers (touch-based)
+  const now = performance.now();
+  scripted.forEach(box => {
+    if (collidesXZ(player.x, player.z, box) && player.y < topOf(box) + 1.6 && player.y > bottomOf(box) - 1) {
+      runScript(box, now);
+    }
+  });
+  doors.forEach((d, objId) => {
+    if (d.obj.script?.action !== 'toggle_door') return;
+    if (collidesXZ(player.x, player.z, d) && player.y < topOf(d) + 1.6 && player.y > bottomOf(d) - 1) {
+      const last = scriptCooldown.get(objId) || 0;
+      if (now - last > 1500) { scriptCooldown.set(objId, now); socket.emit('toggle-door', objId); }
+    }
+  });
+
   // killzones + falling off world
-  for (const c of colliders) {
-    if (c.type !== 'killzone') continue;
+  for (const c of killzones) {
     if (collidesXZ(player.x, player.z, c) && player.y < topOf(c) + 1 && player.y > bottomOf(c) - 1) {
       respawn();
     }
@@ -368,7 +487,6 @@ function updatePlayer(dt) {
   camera.position.set(camX, camY, camZ);
   camera.lookAt(player.x, player.y + 1.1, player.z);
 
-  // send network update
   moveSendTimer += dt;
   if (moveSendTimer > 0.08) {
     moveSendTimer = 0;
@@ -380,7 +498,7 @@ function updateCoins() {
   let changed = false;
   coins.forEach(c => {
     if (c.taken) return;
-    const d = Math.hypot(player.x - c.obj.x, player.z - c.obj.z) + Math.abs((player.y) - c.obj.y);
+    const d = Math.hypot(player.x - c.obj.x, player.z - c.obj.z) + Math.abs(player.y - c.obj.y);
     c.mesh.rotation.y += 0.03;
     if (d < 1.4) {
       c.taken = true;

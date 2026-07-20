@@ -60,6 +60,12 @@
   .card-body h3 { margin: 0; font-size: 16px; }
   .card-body p { margin: 0; font-size: 13px; color: var(--text-dim); line-height: 1.4; flex: 1; }
   .card-meta { display: flex; justify-content: space-between; align-items: center; margin-top: 6px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+  .meta-stats { display: flex; gap: 10px; align-items: center; }
+  .like-btn { background: none; padding: 0; font-family: var(--mono); font-size: 11px; color: var(--text-dim); display: flex; align-items: center; gap: 3px; }
+  .like-btn.liked { color: var(--danger); }
+  .live-badge { display: flex; align-items: center; gap: 4px; color: var(--ok); }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--ok); animation: pulse 1.4s infinite; }
+  @keyframes pulse { 50% { opacity: .3; } }
   .play-pill {
     font-size: 11px; text-transform: uppercase; letter-spacing: 1px;
     color: var(--accent); border: 1px solid var(--accent-dim); padding: 3px 8px; border-radius: 100px;
@@ -70,10 +76,14 @@
 <body class="dot-bg">
   <header class="topbar">
     <div class="logo"><span class="le">le</span><span class="games">games</span><span class="cursor">_</span></div>
-    <nav class="nav-links">
-      <a href="/" class="active">Browse</a>
-      <a href="/studio.html">Studio</a>
-    </nav>
+    <div style="display:flex;align-items:center;gap:18px;">
+      <nav class="nav-links">
+        <a href="/" class="active">Browse</a>
+        <a href="/studio.html">Studio</a>
+        <a href="/studio.html?mine=1" id="myGamesLink" style="display:none;">My Games</a>
+      </nav>
+      <div id="authSlot"></div>
+    </div>
   </header>
 
   <section class="hero">
@@ -89,43 +99,94 @@
   <section class="section" id="games">
     <div class="section-head">
       <h2>Published worlds</h2>
-      <span class="count" id="count">loading…</span>
+      <div style="display:flex;align-items:center;gap:14px;">
+        <select id="sortSelect" style="font-size:12px;padding:6px 10px;">
+          <option value="new">Newest</option>
+          <option value="likes">Most liked</option>
+          <option value="plays">Most played</option>
+        </select>
+        <span class="count" id="count">loading…</span>
+      </div>
     </div>
     <div class="grid" id="grid"></div>
   </section>
 
-  <script>
+  <script type="module">
+    import { fetchMe, mountAuthWidget, onAuthChange, getUser, openAuthModal } from '/js/auth.js';
+
+    mountAuthWidget(document.getElementById('authSlot'));
+    const myGamesLink = document.getElementById('myGamesLink');
+    onAuthChange(u => { myGamesLink.style.display = u ? 'inline-block' : 'none'; });
+    fetchMe();
+
+    let allGames = [];
+    const sortSelect = document.getElementById('sortSelect');
+    sortSelect.addEventListener('change', renderGrid);
+
     async function load() {
       const grid = document.getElementById('grid');
       const count = document.getElementById('count');
       try {
         const res = await fetch('/api/games');
-        const games = await res.json();
-        count.textContent = games.length + (games.length === 1 ? ' game' : ' games');
-        if (games.length === 0) {
-          grid.innerHTML = '<div class="empty">No games published yet. Open Studio and publish the first one.</div>';
-          return;
-        }
-        grid.innerHTML = games
-          .sort((a, b) => b.createdAt - a.createdAt)
-          .map(g => `
-            <a class="card" href="/play.html?id=${g.id}">
-              <div class="thumb"><div class="peak"></div></div>
-              <div class="card-body">
-                <h3>${escapeHtml(g.name)}</h3>
-                <p>${escapeHtml(g.description || 'No description yet.')}</p>
-                <div class="card-meta">
-                  <span>by ${escapeHtml(g.author || 'Anonymous')}</span>
-                  <span class="play-pill">Play ▶</span>
-                </div>
-              </div>
-            </a>
-          `).join('');
+        allGames = await res.json();
+        count.textContent = allGames.length + (allGames.length === 1 ? ' game' : ' games');
+        renderGrid();
       } catch (e) {
         count.textContent = '';
         grid.innerHTML = '<div class="empty">Could not reach the LeGames server. Is it running?</div>';
       }
     }
+
+    function renderGrid() {
+      const grid = document.getElementById('grid');
+      if (allGames.length === 0) {
+        grid.innerHTML = '<div class="empty">No games published yet. Open Studio and publish the first one.</div>';
+        return;
+      }
+      const mode = sortSelect.value;
+      const sorted = [...allGames].sort((a, b) => {
+        if (mode === 'likes') return b.likeCount - a.likeCount;
+        if (mode === 'plays') return (b.plays || 0) - (a.plays || 0);
+        return b.createdAt - a.createdAt;
+      });
+      grid.innerHTML = sorted.map(g => `
+        <div class="card" style="cursor:default;">
+          <a href="/play.html?id=${g.id}" style="text-decoration:none;color:inherit;">
+            <div class="thumb"><div class="peak"></div>
+              ${g.livePlayers > 0 ? `<div class="live-badge" style="position:absolute;top:8px;right:8px;background:rgba(10,12,18,.7);padding:3px 8px;border-radius:100px;font-family:var(--mono);font-size:10px;"><span class="live-dot"></span>${g.livePlayers} playing</div>` : ''}
+            </div>
+            <div class="card-body">
+              <h3>${escapeHtml(g.name)}</h3>
+              <p>${escapeHtml(g.description || 'No description yet.')}</p>
+            </div>
+          </a>
+          <div class="card-body" style="padding-top:0;">
+            <div class="card-meta">
+              <span>by ${escapeHtml(g.ownerName || 'Anonymous')}</span>
+              <div class="meta-stats">
+                <button class="like-btn ${g.liked ? 'liked' : ''}" data-id="${g.id}">${g.liked ? '♥' : '♡'} ${g.likeCount}</button>
+                <span>▶ ${g.plays || 0}</span>
+              </div>
+            </div>
+            <a href="/play.html?id=${g.id}"><span class="play-pill" style="display:inline-block;margin-top:8px;">Play ▶</span></a>
+          </div>
+        </div>
+      `).join('');
+      grid.querySelectorAll('.like-btn').forEach(btn => {
+        btn.addEventListener('click', () => toggleLike(btn.dataset.id, btn));
+      });
+    }
+
+    async function toggleLike(id, btn) {
+      if (!getUser()) { openAuthModal('login', () => toggleLike(id, btn)); return; }
+      const res = await fetch(`/api/games/${id}/like`, { method: 'POST' });
+      if (!res.ok) return;
+      const data = await res.json();
+      const g = allGames.find(x => x.id === id);
+      if (g) { g.likeCount = data.likeCount; g.liked = data.liked; }
+      renderGrid();
+    }
+
     function escapeHtml(s) {
       return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
     }

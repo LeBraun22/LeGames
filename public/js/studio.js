@@ -1,6 +1,68 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { buildTerrainMesh, buildObjectMesh, generateTerrain, flatTerrain, terrainHeightAt, OBJECT_TYPES } from './shared.js';
+import { fetchMe, mountAuthWidget, onAuthChange, getUser, openAuthModal } from './auth.js';
+
+mountAuthWidget(document.getElementById('authSlot'));
+fetchMe().then(u => {
+  if (u) {
+    document.getElementById('avatarColor').value = hslToHex(u.color) || '#4fd1ff';
+    document.getElementById('avatarAccessory').value = u.accessory || 'none';
+  }
+});
+function hslToHex(hsl) {
+  const m = /hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/.exec(hsl || '');
+  if (!m) return null;
+  const h = +m[1] / 360, s = +m[2] / 100, l = +m[3] / 100;
+  const a = s * Math.min(l, 1 - l);
+  const f = n => {
+    const k = (n + h * 12) % 12;
+    const c = l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    return Math.round(255 * c).toString(16).padStart(2, '0');
+  };
+  return `#${f(0)}${f(8)}${f(4)}`;
+}
+document.getElementById('saveAvatarBtn').addEventListener('click', async () => {
+  if (!getUser()) { openAuthModal('login'); return; }
+  await fetch('/api/auth/avatar', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      color: document.getElementById('avatarColor').value,
+      accessory: document.getElementById('avatarAccessory').value
+    })
+  });
+  showToast('Avatar saved');
+});
+document.getElementById('myGamesBtn').addEventListener('click', async () => {
+  if (!getUser()) { openAuthModal('login'); return; }
+  const res = await fetch('/api/games/mine');
+  const games = await res.json();
+  showMyGamesModal(games);
+});
+function showMyGamesModal(games) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal-card" style="width:380px;">
+      <button class="modal-close" id="myGamesClose">✕</button>
+      <h3>My published games</h3>
+      <p class="sub">${games.length ? 'Click one to open it.' : "You haven't published anything yet."}</p>
+      <div style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;">
+        ${games.map(g => `
+          <a href="/play.html?id=${g.id}" style="display:block;padding:10px 12px;background:var(--panel);border:1px solid var(--panel-border);border-radius:8px;text-decoration:none;color:var(--text);">
+            <div style="font-weight:600;font-size:13px;">${escapeHtml(g.name)}</div>
+            <div style="font-size:11px;color:var(--text-dim);margin-top:2px;">♥ ${g.likeCount} · ▶ ${g.plays || 0} plays</div>
+          </a>
+        `).join('')}
+      </div>
+    </div>
+  `;
+  document.body.appendChild(backdrop);
+  backdrop.querySelector('#myGamesClose').addEventListener('click', () => backdrop.remove());
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) backdrop.remove(); });
+}
+function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
 // ---------- state ----------
 const SCALE = 2;
@@ -211,11 +273,14 @@ function makeDefaultObject(type, x, z) {
 }
 
 // ---------- inspector ----------
+const SCRIPTABLE_TYPES = ['box', 'ramp'];
 function renderInspector() {
   const el = document.getElementById('inspector');
   const obj = objects.find(o => o.id === selectedId);
   if (!obj) { el.innerHTML = '<div class="no-select-msg">Nothing selected</div>'; return; }
   const hasSize = obj.sx !== undefined;
+  const scriptable = SCRIPTABLE_TYPES.includes(obj.type);
+  const action = obj.script?.action || 'none';
   el.innerHTML = `
     <div class="prop-title"><span class="swatch" style="background:${obj.color}"></span> ${OBJECT_TYPES[obj.type]?.label || obj.type}</div>
     <div class="field"><label>Position (x, y, z)</label>
@@ -235,6 +300,25 @@ function renderInspector() {
     </div>` : ''}
     <div class="field"><label>Rotation Y (radians)</label><input type="number" step="0.1" id="ry" value="${(obj.ry || 0).toFixed(2)}"></div>
     <div class="field"><label>Color</label><input type="color" id="color" value="${obj.color}" style="width:100%;height:34px;padding:2px;"></div>
+    ${scriptable ? `
+    <div class="field"><label>Touch script</label>
+      <select id="scriptAction">
+        <option value="none" ${action==='none'?'selected':''}>None</option>
+        <option value="give_coin" ${action==='give_coin'?'selected':''}>Give a coin</option>
+        <option value="checkpoint" ${action==='checkpoint'?'selected':''}>Set as checkpoint</option>
+        <option value="teleport" ${action==='teleport'?'selected':''}>Teleport player</option>
+        <option value="toggle_door" ${action==='toggle_door'?'selected':''}>Toggle door (disappear/reappear)</option>
+      </select>
+    </div>
+    ${action === 'teleport' ? `
+    <div class="field"><label>Teleport target (x, y, z)</label>
+      <div class="row3">
+        <input type="number" step="0.5" id="tx" value="${(obj.script?.tx ?? obj.x).toFixed(1)}">
+        <input type="number" step="0.5" id="ty" value="${(obj.script?.ty ?? obj.y + 2).toFixed(1)}">
+        <input type="number" step="0.5" id="tz" value="${(obj.script?.tz ?? obj.z).toFixed(1)}">
+      </div>
+    </div>` : ''}
+    ` : ''}
     <button class="delete-btn" id="deleteObj">Delete object</button>
   `;
   const apply = () => {
@@ -253,6 +337,23 @@ function renderInspector() {
   ['px','py','pz','sx','sy','sz','ry','color'].forEach(id => {
     const input = document.getElementById(id);
     if (input) input.addEventListener('input', apply);
+  });
+  const scriptSelect = document.getElementById('scriptAction');
+  if (scriptSelect) {
+    scriptSelect.addEventListener('change', () => {
+      const newAction = scriptSelect.value;
+      obj.script = newAction === 'none' ? undefined : { action: newAction };
+      renderInspector();
+    });
+  }
+  ['tx','ty','tz'].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.addEventListener('input', () => {
+      obj.script = obj.script || { action: 'teleport' };
+      obj.script.tx = parseFloat(document.getElementById('tx').value);
+      obj.script.ty = parseFloat(document.getElementById('ty').value);
+      obj.script.tz = parseFloat(document.getElementById('tz').value);
+    });
   });
   document.getElementById('deleteObj').addEventListener('click', () => {
     objects = objects.filter(o => o.id !== obj.id);
@@ -274,14 +375,18 @@ function showToast(msg, ok = true) {
   setTimeout(() => toast.classList.remove('show'), 3200);
 }
 
-document.getElementById('publishBtn').addEventListener('click', async () => {
+document.getElementById('publishBtn').addEventListener('click', () => {
+  if (!getUser()) { openAuthModal('login', doPublish); return; }
+  doPublish();
+});
+
+async function doPublish() {
   const name = document.getElementById('gameName').value.trim();
   if (!name) { showToast('Give your game a name first', false); return; }
   if (!objects.some(o => o.type === 'spawn')) { showToast('Add at least one Spawn Point', false); return; }
   const payload = {
     name,
     description: document.getElementById('gameDesc').value.trim(),
-    author: document.getElementById('gameAuthor').value.trim(),
     terrain, terrainSize: size, terrainScale: SCALE,
     objects
   };
@@ -292,7 +397,7 @@ document.getElementById('publishBtn').addEventListener('click', async () => {
       body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if (data.id) {
+    if (res.ok && data.id) {
       showToast('Published! Opening game…');
       setTimeout(() => { window.location.href = `/play.html?id=${data.id}`; }, 900);
     } else {
@@ -301,4 +406,4 @@ document.getElementById('publishBtn').addEventListener('click', async () => {
   } catch (e) {
     showToast('Could not reach server', false);
   }
-});
+}

@@ -135,3 +135,65 @@ export function buildObjectMesh(obj) {
   group.userData.gameObject = obj;
   return group;
 }
+
+const RAMP_TILT = -0.35;
+
+// Builds a small world-space height grid for a ramp's top surface, using the
+// exact same transform (position, yaw, fixed tilt) as buildObjectMesh, so
+// walking collision matches what's rendered exactly rather than approximating it.
+export function buildRampHeightGrid(obj, res = 5) {
+  const temp = new THREE.Object3D();
+  temp.position.set(obj.x || 0, obj.y || 0, obj.z || 0);
+  if (obj.ry) temp.rotation.y = obj.ry;
+  temp.rotation.x = RAMP_TILT;
+  temp.updateMatrixWorld(true);
+  const sx = obj.sx || 2, sy = obj.sy || 2, sz = obj.sz || 2;
+  const grid = [];
+  for (let j = 0; j < res; j++) {
+    const row = [];
+    for (let i = 0; i < res; i++) {
+      const lx = -sx / 2 + (sx * i) / (res - 1);
+      const lz = -sz / 2 + (sz * j) / (res - 1);
+      const p = new THREE.Vector3(lx, sy / 2, lz);
+      temp.localToWorld(p);
+      row.push(p);
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+function pointInTriangleBary(px, pz, a, b, c) {
+  const v0x = c.x - a.x, v0z = c.z - a.z;
+  const v1x = b.x - a.x, v1z = b.z - a.z;
+  const v2x = px - a.x, v2z = pz - a.z;
+  const dot00 = v0x * v0x + v0z * v0z;
+  const dot01 = v0x * v1x + v0z * v1z;
+  const dot02 = v0x * v2x + v0z * v2z;
+  const dot11 = v1x * v1x + v1z * v1z;
+  const dot12 = v1x * v2x + v1z * v2z;
+  const denom = dot00 * dot11 - dot01 * dot01;
+  if (Math.abs(denom) < 1e-9) return null;
+  const u = (dot11 * dot02 - dot01 * dot12) / denom;
+  const v = (dot00 * dot12 - dot01 * dot02) / denom;
+  if (u >= -0.01 && v >= -0.01 && u + v <= 1.01) {
+    // barycentric height using a,c,b weights matching u,v definition above
+    const w0 = 1 - u - v; // weight of a
+    return a.y * w0 + c.y * u + b.y * v;
+  }
+  return null;
+}
+
+// Returns the ramp surface height at (worldX, worldZ), or null if outside the ramp footprint.
+export function queryRampHeight(grid, worldX, worldZ) {
+  for (let j = 0; j < grid.length - 1; j++) {
+    for (let i = 0; i < grid[j].length - 1; i++) {
+      const a = grid[j][i], b = grid[j][i + 1], c = grid[j + 1][i], d = grid[j + 1][i + 1];
+      let h = pointInTriangleBary(worldX, worldZ, a, d, b);
+      if (h !== null) return h;
+      h = pointInTriangleBary(worldX, worldZ, a, c, d);
+      if (h !== null) return h;
+    }
+  }
+  return null;
+}

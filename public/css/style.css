@@ -116,3 +116,33 @@ input, textarea, select {
   padding: 3px 9px;
   border-radius: 100px;
 }
+
+/* ---------- auth widget + modal ---------- */
+.auth-widget { display: flex; align-items: center; gap: 10px; }
+.auth-chip {
+  display: flex; align-items: center; gap: 8px; font-size: 13px;
+  background: var(--panel); border: 1px solid var(--panel-border); padding: 6px 12px 6px 6px; border-radius: 100px;
+}
+.auth-avatar-dot { width: 22px; height: 22px; border-radius: 50%; flex-shrink: 0; }
+.auth-signout { color: var(--text-dim); font-size: 12px; background: none; padding: 4px 6px; }
+.auth-signout:hover { color: var(--danger); }
+
+.modal-backdrop {
+  position: fixed; inset: 0; background: rgba(5,7,12,.7); backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center; z-index: 200;
+}
+.modal-card {
+  background: var(--bg-raised); border: 1px solid var(--panel-border); border-radius: 14px;
+  padding: 26px 26px 22px; width: 320px;
+}
+.modal-card h3 { margin: 0 0 4px; font-size: 18px; }
+.modal-card .sub { color: var(--text-dim); font-size: 13px; margin: 0 0 18px; }
+.modal-card .field { margin-bottom: 12px; }
+.modal-card .field label { display: block; font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.modal-card .field input { width: 100%; padding: 9px 10px; }
+.modal-card .error { color: var(--danger); font-size: 12px; min-height: 16px; margin: 4px 0 8px; }
+.modal-card .modal-actions { display: flex; gap: 10px; margin-top: 6px; }
+.modal-card .switch-mode { text-align: center; margin-top: 14px; font-size: 12px; color: var(--text-dim); }
+.modal-card .switch-mode a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.modal-close { position: absolute; top: 14px; right: 16px; background: none; color: var(--text-dim); font-size: 16px; padding: 4px; }
+.modal-card { position: relative; }

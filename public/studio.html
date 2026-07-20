@@ -58,10 +58,13 @@
 <body>
   <header class="topbar studio-topbar">
     <div class="logo"><span class="le">le</span><span class="games">games</span><span class="cursor">_</span> <span style="color:var(--text-dim);font-size:13px;margin-left:8px;">/ studio</span></div>
-    <nav class="nav-links">
-      <a href="/">Browse</a>
-      <a href="/studio.html" class="active">Studio</a>
-    </nav>
+    <div style="display:flex;align-items:center;gap:18px;">
+      <nav class="nav-links">
+        <a href="/">Browse</a>
+        <a href="/studio.html" class="active">Studio</a>
+      </nav>
+      <div id="authSlot"></div>
+    </div>
   </header>
 
   <div class="studio-body">
@@ -109,11 +112,28 @@
     <!-- RIGHT: inspector + publish -->
     <div class="panel-col right">
       <div class="tool-group">
+        <h4>Your avatar</h4>
+        <div class="field">
+          <label>Color</label>
+          <input type="color" id="avatarColor" value="#4fd1ff" style="width:100%;height:34px;padding:2px;">
+        </div>
+        <div class="field">
+          <label>Accessory</label>
+          <select id="avatarAccessory">
+            <option value="none">None</option>
+            <option value="hat">Hat</option>
+            <option value="visor">Visor</option>
+            <option value="halo">Halo</option>
+          </select>
+        </div>
+        <button class="btn-ghost" id="saveAvatarBtn" style="width:100%;font-size:12px;padding:8px;">Save avatar</button>
+      </div>
+      <div class="tool-group">
         <h4>Game info</h4>
         <div class="field"><label>Name</label><input type="text" id="gameName" placeholder="My Awesome World"></div>
         <div class="field"><label>Description</label><textarea id="gameDesc" placeholder="What is this game about?"></textarea></div>
-        <div class="field"><label>Author</label><input type="text" id="gameAuthor" placeholder="Your name"></div>
         <button class="btn-primary" id="publishBtn" style="width:100%;">Publish game ▶</button>
+        <button class="btn-ghost" id="myGamesBtn" style="width:100%;margin-top:8px;font-size:12px;padding:8px;">My published games</button>
       </div>
       <div class="tool-group">
         <h4>Selected object</h4>
