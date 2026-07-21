@@ -1,6 +1,6 @@
 import * as THREE from 'three';
-import { buildTerrainMesh, buildObjectMesh, terrainHeightAt, buildRampHeightGrid, queryRampHeight } from './shared.js';
-import { fetchMe, mountAuthWidget, onAuthChange, getUser, openAuthModal } from './auth.js';
+import { buildTerrainMesh, buildPartMesh, terrainHeightAt, buildPartHeightGrid, queryPartHeight, boundingRadiusXZ } from './shared.js';
+import { fetchMe, mountAuthWidget, getUser, openAuthModal } from './auth.js';
 
 const params = new URLSearchParams(location.search);
 const gameId = params.get('id');
@@ -85,14 +85,14 @@ sun.shadow.camera.top = 100; sun.shadow.camera.bottom = -100;
 scene.add(sun);
 
 let terrain = null, terrainScale = 2;
-const solids = [];    // blocking box colliders {obj,x,y,z,sx,sy,sz,mesh}
-const ramps = [];     // {obj,grid,mesh}
-const killzones = []; // {obj,x,y,z,sx,sy,sz}
-const doors = new Map();   // objectId -> {obj,mesh,x,y,z,sx,sy,sz}
-const scripted = new Map(); // objectId -> {obj,x,y,z,sx,sy,sz,mesh}
-let coins = [];
 const spawns = [];
 let checkpoint = null;
+
+// colliders: Map<partId, { obj, mesh, grid, boundingRadius, canCollide }>
+const colliders = new Map();
+// scripts: Map<partId, { worker, ready, lastPong, missedPongs, errorCount }>
+const scripts = new Map();
+const MAX_SCRIPTED_PARTS = 24;
 
 function buildWorld(g) {
   terrain = g.terrain;
@@ -100,31 +100,112 @@ function buildWorld(g) {
   const terrainMesh = buildTerrainMesh(terrain, terrainScale);
   scene.add(terrainMesh);
 
+  let scriptCount = 0;
   g.objects.forEach(obj => {
-    if (obj.type === 'spawn') spawns.push(obj);
-    const mesh = buildObjectMesh(obj);
+    if (obj.type === 'spawn') { spawns.push(obj); return; }
+    if (obj.type !== 'part') return;
+
+    const mesh = buildPartMesh(obj);
     scene.add(mesh);
+    const grid = buildPartHeightGrid(obj);
+    colliders.set(obj.id, {
+      obj, mesh, grid,
+      boundingRadius: boundingRadiusXZ(obj),
+      canCollide: obj.canCollide !== false
+    });
 
-    const box = { obj, mesh, x: obj.x, y: obj.y, z: obj.z, sx: obj.sx || 2, sy: obj.sy || 2, sz: obj.sz || 2 };
-
-    if (obj.type === 'ramp') {
-      ramps.push({ obj, mesh, grid: buildRampHeightGrid(obj) });
-    } else if (obj.type === 'killzone') {
-      killzones.push(box);
-    } else if (obj.type === 'coin') {
-      coins.push({ obj, mesh, taken: false });
-    } else if (obj.type === 'box') {
-      if (obj.script?.action === 'toggle_door') {
-        doors.set(obj.id, box);
-      } else if (obj.script?.action) {
-        scripted.set(obj.id, box);
-        solids.push(box); // scripted boxes (coin/checkpoint/teleport) are still solid to stand on/bump into
-      } else {
-        solids.push(box);
+    if (obj.script && obj.script.trim()) {
+      if (scriptCount >= MAX_SCRIPTED_PARTS) {
+        console.warn(`LeGames: skipping script on part ${obj.id} — this world has more than ${MAX_SCRIPTED_PARTS} scripted parts.`);
+        return;
       }
+      scriptCount++;
+      startScriptWorker(obj);
     }
   });
 }
+
+// ---------- script worker management ----------
+function startScriptWorker(obj) {
+  const worker = new Worker('/js/part-worker.js');
+  const entry = { worker, ready: false, lastPong: Date.now(), missedPongs: 0, errorCount: 0 };
+  scripts.set(obj.id, entry);
+
+  worker.onmessage = ({ data }) => handleWorkerMessage(obj.id, data);
+  worker.onerror = e => {
+    console.warn(`LeGames: script error on part ${obj.id}:`, e.message);
+    entry.errorCount++;
+  };
+
+  worker.postMessage({
+    type: 'init',
+    part: { id: obj.id, shape: obj.shape, x: obj.x, y: obj.y, z: obj.z, sx: obj.sx, sy: obj.sy, sz: obj.sz, rx: obj.rx, ry: obj.ry, rz: obj.rz, color: obj.color, canCollide: obj.canCollide !== false, visible: true },
+    script: obj.script,
+    playerCoins: coinScore,
+    replayEvents: []
+  });
+}
+
+function handleWorkerMessage(partId, data) {
+  const entry = scripts.get(partId);
+  const c = colliders.get(partId);
+  if (data.type === 'ready') { if (entry) entry.ready = true; return; }
+  if (data.type === 'pong') { if (entry) { entry.lastPong = Date.now(); entry.missedPongs = 0; } return; }
+  if (data.type === 'error') {
+    if (entry) entry.errorCount++;
+    console.warn(`LeGames: script error on part ${partId}:`, data.message);
+    return;
+  }
+  if (!c) return;
+
+  if (data.type === 'set') {
+    if (data.prop === 'position') { c.obj.x = data.value.x; c.obj.y = data.value.y; c.obj.z = data.value.z; c.mesh.position.set(data.value.x, data.value.y, data.value.z); c.grid = buildPartHeightGrid(c.obj); }
+    else if (data.prop === 'rotation') { c.obj.rx = data.value.x; c.obj.ry = data.value.y; c.obj.rz = data.value.z; c.mesh.rotation.set(data.value.x, data.value.y, data.value.z); c.grid = buildPartHeightGrid(c.obj); }
+    else if (data.prop === 'color') { c.obj.color = data.value; c.mesh.material.color.set(data.value); }
+    else if (data.prop === 'visible') { c.mesh.visible = data.value; }
+    else if (data.prop === 'collidable') { c.canCollide = data.value; }
+  } else if (data.type === 'destroy') {
+    scene.remove(c.mesh);
+    colliders.delete(partId);
+    const e = scripts.get(partId);
+    if (e) { e.worker.terminate(); scripts.delete(partId); }
+  } else if (data.type === 'player-cmd') {
+    applyPlayerCmd(data.cmd, data.args, c);
+  } else if (data.type === 'broadcast') {
+    socket.emit('part-event', { objectId: partId, name: data.name, data: data.data });
+  }
+}
+
+function applyPlayerCmd(cmd, args, c) {
+  if (cmd === 'giveCoin') {
+    coinScore += (args[0] ?? 1);
+    document.getElementById('coinCount').textContent = `◆ ${coinScore}`;
+    scripts.forEach(e => { if (e.ready) e.worker.postMessage({ type: 'coins-sync', coins: coinScore }); });
+  } else if (cmd === 'teleport') {
+    player.x = args[0]; player.y = args[1]; player.z = args[2]; player.vy = 0;
+  } else if (cmd === 'respawn') {
+    respawn();
+  } else if (cmd === 'setCheckpoint') {
+    const box = c || { obj: { x: player.x, y: player.y, z: player.z } };
+    checkpoint = { x: box.obj.x, y: box.obj.y + (box.obj.sy ? box.obj.sy / 2 : 0), z: box.obj.z };
+    logChat('LeGames', 'Checkpoint saved');
+  }
+}
+
+// heartbeat: kill scripts that stop responding instead of letting them hang forever
+setInterval(() => {
+  scripts.forEach((entry, partId) => {
+    if (!entry.ready) return;
+    entry.missedPongs++;
+    if (entry.missedPongs > 2) {
+      console.warn(`LeGames: script on part ${partId} stopped responding — disabling it.`);
+      entry.worker.terminate();
+      scripts.delete(partId);
+      return;
+    }
+    entry.worker.postMessage({ type: 'ping' });
+  });
+}, 2500);
 
 // ---------- player avatar ----------
 function makeAvatarMesh(color, accessory) {
@@ -283,10 +364,10 @@ socket.on('roster', roster => {
   Object.entries(roster).forEach(([id, p]) => { if (id !== socket.id) addRemote(id, p); });
   refreshPlayersList();
 });
-socket.on('doors', doorMap => {
-  Object.entries(doorMap).forEach(([objId, open]) => applyDoorState(Number(objId), open));
+socket.on('part-events-replay', map => {
+  Object.entries(map).forEach(([objId, ev]) => deliverToWorker(Number(objId), { type: 'event', name: ev.name, data: ev.data }));
 });
-socket.on('door-toggled', ({ objectId, open }) => applyDoorState(objectId, open));
+socket.on('part-event', ({ objectId, name, data }) => deliverToWorker(objectId, { type: 'event', name, data }));
 socket.on('player-joined', p => { addRemote(p.id, p); refreshPlayersList(); logChat('LeGames', `${p.name} joined`); });
 socket.on('player-moved', p => {
   const rp = remotePlayers.get(p.id);
@@ -300,19 +381,17 @@ socket.on('player-left', ({ id }) => {
 });
 socket.on('chat', ({ name, text }) => logChat(name, text));
 
+function deliverToWorker(partId, msg) {
+  const entry = scripts.get(partId);
+  if (entry && entry.ready) entry.worker.postMessage(msg);
+}
+
 function addRemote(id, p) {
   if (remotePlayers.has(id)) return;
   const mesh = makeAvatarMesh(p.color || '#ff8a4f', p.accessory);
   mesh.add(makeNameSprite(p.name || 'Player'));
   scene.add(mesh);
   remotePlayers.set(id, { mesh, target: p, name: p.name, color: p.color || '#ff8a4f' });
-}
-
-function applyDoorState(objectId, open) {
-  const d = doors.get(objectId);
-  if (!d) return;
-  d.open = open;
-  d.mesh.visible = !open;
 }
 
 // ---------- start ----------
@@ -328,33 +407,14 @@ enterBtn.addEventListener('click', async () => {
   fetch(`/api/games/${gameId}/play`, { method: 'POST' }).catch(() => {});
 });
 
-// ---------- collision helpers ----------
-function collidesXZ(x, z, box) {
-  return Math.abs(x - box.x) < box.sx / 2 + RADIUS && Math.abs(z - box.z) < box.sz / 2 + RADIUS;
+// ---------- collision + touch ----------
+function collidesXZ(x, z, c) {
+  return Math.hypot(x - c.obj.x, z - c.obj.z) < c.boundingRadius + RADIUS;
 }
-function topOf(box) { return box.y + box.sy / 2; }
-function bottomOf(box) { return box.y - box.sy / 2; }
+function topOf(c) { return c.obj.y + (c.obj.sy || 2) / 2; }
+function bottomOf(c) { return c.obj.y - (c.obj.sy || 2) / 2; }
 
-// ---------- scripts ----------
-const scriptCooldown = new Map(); // objectId -> last-triggered time
-function runScript(box, now) {
-  const action = box.obj.script?.action;
-  if (!action) return;
-  const last = scriptCooldown.get(box.obj.id) || 0;
-  if (now - last < 900) return;
-  scriptCooldown.set(box.obj.id, now);
-  if (action === 'give_coin') {
-    coinScore++;
-    document.getElementById('coinCount').textContent = `◆ ${coinScore}`;
-  } else if (action === 'checkpoint') {
-    checkpoint = { x: box.x, y: topOf(box), z: box.z };
-    logChat('LeGames', 'Checkpoint saved');
-  } else if (action === 'teleport') {
-    const s = box.obj.script;
-    player.x = s.tx ?? box.x; player.y = (s.ty ?? topOf(box) + 2); player.z = s.tz ?? box.z;
-    player.vy = 0;
-  }
-}
+let touchingSet = new Set();
 
 // ---------- main loop ----------
 const clock = new THREE.Clock();
@@ -364,10 +424,7 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(0.05, clock.getDelta());
 
-  if (started && terrain) {
-    updatePlayer(dt);
-    updateCoins();
-  }
+  if (started && terrain) updatePlayer(dt);
 
   remotePlayers.forEach(rp => {
     const t = rp.target;
@@ -400,81 +457,45 @@ function updatePlayer(dt) {
   let nx = player.x + moveX;
   let nz = player.z + moveZ;
 
-  // block movement into solid (non-door, non-ramp) colliders
-  for (const c of solids) {
+  // horizontal blocking (solid, non-passthrough parts only)
+  colliders.forEach(c => {
+    if (!c.canCollide) return;
     if (collidesXZ(nx, nz, c) && player.y < topOf(c) + 0.05 && player.y > bottomOf(c) - 1.5) {
       nx = player.x; nz = player.z;
-      break;
     }
-  }
-  // doors block only while closed
-  for (const d of doors.values()) {
-    if (d.open) continue;
-    if (collidesXZ(nx, nz, d) && player.y < topOf(d) + 0.05 && player.y > bottomOf(d) - 1.5) {
-      nx = player.x; nz = player.z;
-      break;
-    }
-  }
+  });
   player.x = nx; player.z = nz;
 
-  // gravity + ground resolution: highest of terrain / ramp surfaces / box tops
+  // gravity + ground resolution: highest of terrain / any part surface under the player
   player.vy += GRAVITY * dt;
   let ny = player.y + player.vy * dt;
   let groundH = terrainHeightAt(terrain, terrainScale, player.x, player.z) + RADIUS;
 
-  for (const r of ramps) {
-    const h = queryRampHeight(r.grid, player.x, player.z);
-    if (h !== null) groundH = Math.max(groundH, h + RADIUS);
-  }
-  for (const c of solids) {
-    if (collidesXZ(player.x, player.z, c)) {
-      const top = topOf(c) + RADIUS;
-      if (ny <= top + 0.2 && player.vy <= 0) groundH = Math.max(groundH, top);
-    }
-  }
-  for (const d of doors.values()) {
-    if (d.open) continue;
-    if (collidesXZ(player.x, player.z, d)) {
-      const top = topOf(d) + RADIUS;
-      if (ny <= top + 0.2 && player.vy <= 0) groundH = Math.max(groundH, top);
-    }
-  }
+  colliders.forEach(c => {
+    if (!c.canCollide) return;
+    const h = queryPartHeight(c.grid, player.x, player.z);
+    if (h !== null && ny <= h + RADIUS + 0.2 && player.vy <= 0) groundH = Math.max(groundH, h + RADIUS);
+  });
 
-  if (ny <= groundH) {
-    ny = groundH;
-    player.vy = 0;
-    player.grounded = true;
-  } else {
-    player.grounded = false;
-  }
+  if (ny <= groundH) { ny = groundH; player.vy = 0; player.grounded = true; }
+  else player.grounded = false;
   player.y = ny;
 
-  if (player.grounded && keys['Space']) {
-    player.vy = JUMP_SPEED;
-    player.grounded = false;
-  }
+  if (player.grounded && keys['Space']) { player.vy = JUMP_SPEED; player.grounded = false; }
 
-  // scripted triggers (touch-based)
-  const now = performance.now();
-  scripted.forEach(box => {
-    if (collidesXZ(player.x, player.z, box) && player.y < topOf(box) + 1.6 && player.y > bottomOf(box) - 1) {
-      runScript(box, now);
+  // touch detection (rising-edge only, like Roblox's Touched event)
+  const newTouching = new Set();
+  colliders.forEach((c, partId) => {
+    if (!scripts.has(partId)) return; // only scripted parts care about touch
+    const near = Math.hypot(player.x - c.obj.x, player.z - c.obj.z) < c.boundingRadius + RADIUS + 0.3
+      && player.y < topOf(c) + 1.8 && player.y > bottomOf(c) - 1.2;
+    if (near) {
+      newTouching.add(partId);
+      if (!touchingSet.has(partId)) deliverToWorker(partId, { type: 'touch', player: { name: nameInput.value || 'Player' } });
     }
   });
-  doors.forEach((d, objId) => {
-    if (d.obj.script?.action !== 'toggle_door') return;
-    if (collidesXZ(player.x, player.z, d) && player.y < topOf(d) + 1.6 && player.y > bottomOf(d) - 1) {
-      const last = scriptCooldown.get(objId) || 0;
-      if (now - last > 1500) { scriptCooldown.set(objId, now); socket.emit('toggle-door', objId); }
-    }
-  });
+  touchingSet = newTouching;
 
-  // killzones + falling off world
-  for (const c of killzones) {
-    if (collidesXZ(player.x, player.z, c) && player.y < topOf(c) + 1 && player.y > bottomOf(c) - 1) {
-      respawn();
-    }
-  }
   if (player.y < -30) respawn();
 
   // apply to mesh + camera
@@ -492,20 +513,4 @@ function updatePlayer(dt) {
     moveSendTimer = 0;
     socket.emit('move', { x: player.x, y: player.y - RADIUS, z: player.z, ry: player.yaw });
   }
-}
-
-function updateCoins() {
-  let changed = false;
-  coins.forEach(c => {
-    if (c.taken) return;
-    const d = Math.hypot(player.x - c.obj.x, player.z - c.obj.z) + Math.abs(player.y - c.obj.y);
-    c.mesh.rotation.y += 0.03;
-    if (d < 1.4) {
-      c.taken = true;
-      c.mesh.visible = false;
-      coinScore++;
-      changed = true;
-    }
-  });
-  if (changed) document.getElementById('coinCount').textContent = `◆ ${coinScore}`;
 }

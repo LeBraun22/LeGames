@@ -45,7 +45,7 @@ function saveUsers(u) { fs.writeFileSync(USERS_FILE, JSON.stringify(u)); }
     games.push({
       id: nanoid(8),
       name: 'Rolling Hills',
-      description: 'A starter world with gentle hills, a working door switch, and a checkpoint. Open Studio to remix it.',
+      description: 'A starter world with gentle hills, a working door, a checkpoint, and a scripted coin. Open Studio to see how the scripts work.',
       ownerId: null,
       ownerName: 'LeGames',
       createdAt: Date.now(),
@@ -56,12 +56,24 @@ function saveUsers(u) { fs.writeFileSync(USERS_FILE, JSON.stringify(u)); }
       terrain,
       objects: [
         { id: 1, type: 'spawn', x: 0, y: 6, z: 0 },
-        { id: 2, type: 'box', x: 6, y: 3, z: -4, sx: 2, sy: 2, sz: 2, color: '#4fd1ff' },
-        { id: 3, type: 'ramp', x: -10, y: 2, z: 5, sx: 4, sy: 2, sz: 8, ry: 0, color: '#ff8a4f' },
-        { id: 4, type: 'killzone', x: 14, y: 0.2, z: 10, sx: 4, sy: 0.4, sz: 4, color: '#ff4f6d' },
-        { id: 5, type: 'coin', x: -10, y: 5, z: 5, color: '#ffd54f' },
-        { id: 6, type: 'box', x: 0, y: 3, z: 12, sx: 3, sy: 3, sz: 1, color: '#a892ff', script: { action: 'toggle_door' } },
-        { id: 7, type: 'box', x: -4, y: 1, z: -8, sx: 2, sy: 2, sz: 2, color: '#6bffa0', script: { action: 'checkpoint' } }
+        { id: 2, type: 'part', shape: 'box', x: 6, y: 3, z: -4, sx: 2, sy: 2, sz: 2, rx: 0, ry: 0, rz: 0, color: '#4fd1ff' },
+        { id: 3, type: 'part', shape: 'wedge', x: -10, y: 2, z: 5, sx: 4, sy: 2, sz: 8, rx: 0, ry: 0, rz: 0, color: '#ff8a4f' },
+        {
+          id: 4, type: 'part', shape: 'box', x: 14, y: 0.2, z: 10, sx: 4, sy: 0.4, sz: 4, rx: 0, ry: 0, rz: 0, color: '#ff4f6d', canCollide: false,
+          script: "part.onTouch(() => {\n  game.player.respawn();\n});"
+        },
+        {
+          id: 5, type: 'part', shape: 'sphere', x: -10, y: 5, z: 5, sx: 1, sy: 1, sz: 1, rx: 0, ry: 0, rz: 0, color: '#ffd54f', canCollide: false,
+          script: "let taken = false;\npart.onTouch(() => {\n  if (taken) return;\n  taken = true;\n  game.player.giveCoin(1);\n  part.setVisible(false);\n  game.broadcast('taken', true);\n});\ngame.on('taken', (v) => {\n  if (v) { taken = true; part.setVisible(false); }\n});"
+        },
+        {
+          id: 6, type: 'part', shape: 'box', x: 0, y: 3, z: 12, sx: 3, sy: 3, sz: 1, rx: 0, ry: 0, rz: 0, color: '#a892ff',
+          script: "let open = false;\npart.onTouch(() => {\n  open = !open;\n  part.setVisible(!open);\n  part.setCollidable(!open);\n  game.broadcast('open', open);\n});\ngame.on('open', (v) => {\n  open = v;\n  part.setVisible(!open);\n  part.setCollidable(!open);\n});"
+        },
+        {
+          id: 7, type: 'part', shape: 'box', x: -4, y: 1, z: -8, sx: 2, sy: 2, sz: 2, rx: 0, ry: 0, rz: 0, color: '#6bffa0',
+          script: "part.onTouch(() => {\n  game.player.setCheckpoint();\n});"
+        }
       ]
     });
     saveGames(games);
@@ -220,7 +232,11 @@ app.post('/api/games/:id/like', requireAuth, (req, res) => {
 // ---------- live multiplayer ----------
 // roomState[gameId] = { socketId: { name, x, y, z, ry, color, accessory } }
 const roomState = {};
-const doorState = {}; // doorState[gameId] = { objectId: boolean(open) }
+// lastPartEvent[gameId] = { objectId: { name, data } } -- only the most recent
+// broadcast per part is kept, so a player who joins mid-game can be caught up
+// (e.g. a door that's currently open) without the server needing to understand
+// what any given script's event payloads mean.
+const lastPartEvent = {};
 
 io.on('connection', socket => {
   let currentRoom = null;
@@ -236,7 +252,7 @@ io.on('connection', socket => {
       accessory: accessory || 'none'
     };
     socket.emit('roster', roomState[gameId]);
-    socket.emit('doors', doorState[gameId] || {});
+    socket.emit('part-events-replay', lastPartEvent[gameId] || {});
     socket.to(gameId).emit('player-joined', { id: socket.id, ...roomState[gameId][socket.id] });
   });
 
@@ -246,11 +262,14 @@ io.on('connection', socket => {
     socket.to(currentRoom).emit('player-moved', { id: socket.id, ...state });
   });
 
-  socket.on('toggle-door', objectId => {
-    if (!currentRoom) return;
-    if (!doorState[currentRoom]) doorState[currentRoom] = {};
-    doorState[currentRoom][objectId] = !doorState[currentRoom][objectId];
-    io.to(currentRoom).emit('door-toggled', { objectId, open: doorState[currentRoom][objectId] });
+  // Generic pub/sub used by part scripts via game.broadcast()/game.on(). The
+  // server doesn't interpret the payload at all, just relays it and remembers
+  // the latest one per part so late joiners can catch up.
+  socket.on('part-event', ({ objectId, name, data }) => {
+    if (!currentRoom || objectId === undefined || !name) return;
+    if (!lastPartEvent[currentRoom]) lastPartEvent[currentRoom] = {};
+    lastPartEvent[currentRoom][objectId] = { name, data };
+    io.to(currentRoom).emit('part-event', { objectId, name, data, from: socket.id });
   });
 
   socket.on('chat', text => {

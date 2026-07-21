@@ -3,7 +3,6 @@ import * as THREE from 'three';
 
 // ---------- procedural terrain seed (Studio "Generate" button) ----------
 export function makeNoise2D(seed) {
-  // small deterministic value-noise generator (no external deps)
   function hash(x, y) {
     let h = seed + x * 374761393 + y * 668265263;
     h = (h ^ (h >> 13)) * 1274126177;
@@ -94,67 +93,122 @@ export function terrainHeightAt(terrain, scale, worldX, worldZ) {
   return top + (bot - top) * fz;
 }
 
-// ---------- placeable objects ----------
-export const OBJECT_TYPES = {
-  box:      { label: 'Block',      color: '#4fd1ff' },
-  ramp:     { label: 'Ramp',       color: '#ff8a4f' },
-  spawn:    { label: 'Spawn Point',color: '#6bffa0' },
-  killzone: { label: 'Kill Zone',  color: '#ff4f6d' },
-  coin:     { label: 'Coin',       color: '#ffd54f' }
-};
+// ============================================================
+// PARTS — unified shape system (box / sphere / cylinder / wedge),
+// fully rotatable (rx, ry, rz euler radians), scriptable.
+// ============================================================
 
-export function buildObjectMesh(obj) {
-  const group = new THREE.Group();
-  const color = obj.color || OBJECT_TYPES[obj.type]?.color || '#ffffff';
-  let mesh;
-  if (obj.type === 'box' || obj.type === 'ramp' || obj.type === 'killzone') {
-    const geo = new THREE.BoxGeometry(obj.sx || 2, obj.sy || 2, obj.sz || 2);
-    const mat = new THREE.MeshStandardMaterial({
-      color,
-      roughness: 0.5,
-      metalness: 0.1,
-      transparent: obj.type === 'killzone',
-      opacity: obj.type === 'killzone' ? 0.55 : 1
-    });
-    mesh = new THREE.Mesh(geo, mat);
-    mesh.castShadow = obj.type !== 'killzone';
-    mesh.receiveShadow = true;
-  } else if (obj.type === 'spawn') {
-    const geo = new THREE.CylinderGeometry(1, 1, 0.15, 20);
-    mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4 }));
-  } else if (obj.type === 'coin') {
-    const geo = new THREE.CylinderGeometry(0.5, 0.5, 0.12, 18);
-    mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.6, metalness: 0.6, roughness: 0.3 }));
-  } else {
-    mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color }));
-  }
-  group.add(mesh);
-  group.position.set(obj.x || 0, obj.y || 0, obj.z || 0);
-  if (obj.ry) group.rotation.y = obj.ry;
-  if (obj.type === 'ramp') group.rotation.x = -0.35;
-  group.userData.gameObject = obj;
-  return group;
+export const SHAPES = {
+  box:      { label: 'Block' },
+  sphere:   { label: 'Sphere' },
+  cylinder: { label: 'Cylinder' },
+  wedge:    { label: 'Wedge (ramp)' }
+};
+export const DEFAULT_PART_COLOR = '#4fd1ff';
+
+// A wedge is a right-triangular prism: flat rectangular base, one vertical
+// face at local z = -sz/2 (the "back"), sloping down to a knife-edge at
+// z = +sz/2 (the "front"). Walking from back to front goes downhill.
+function buildWedgeGeometry(sx, sy, sz) {
+  const hx = sx / 2, hy = sy / 2, hz = sz / 2;
+  // 6 vertices: back face is a full rectangle (4 verts), front edge is a line (2 verts)
+  const v = [
+    [-hx, -hy, -hz], [hx, -hy, -hz], [hx, hy, -hz], [-hx, hy, -hz], // back rectangle (0-3)
+    [-hx, -hy, hz], [hx, -hy, hz]                                   // front bottom edge (4-5)
+  ];
+  const positions = [];
+  function tri(a, b, c) { [a, b, c].forEach(i => positions.push(...v[i])); }
+  // back face
+  tri(0, 1, 2); tri(0, 2, 3);
+  // bottom face
+  tri(0, 4, 5); tri(0, 5, 1);
+  // slope (top) face
+  tri(3, 2, 5); tri(3, 5, 4);
+  // left face
+  tri(0, 3, 4);
+  // right face
+  tri(1, 5, 2);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.computeVertexNormals();
+  return geo;
 }
 
-const RAMP_TILT = -0.35;
+export function buildPartMesh(part) {
+  const color = part.color || DEFAULT_PART_COLOR;
+  const sx = part.sx ?? 2, sy = part.sy ?? 2, sz = part.sz ?? 2;
+  let geo;
+  if (part.shape === 'sphere') geo = new THREE.SphereGeometry(sx / 2, 20, 16);
+  else if (part.shape === 'cylinder') geo = new THREE.CylinderGeometry(sx / 2, sx / 2, sy, 20);
+  else if (part.shape === 'wedge') geo = buildWedgeGeometry(sx, sy, sz);
+  else geo = new THREE.BoxGeometry(sx, sy, sz);
 
-// Builds a small world-space height grid for a ramp's top surface, using the
-// exact same transform (position, yaw, fixed tilt) as buildObjectMesh, so
-// walking collision matches what's rendered exactly rather than approximating it.
-export function buildRampHeightGrid(obj, res = 5) {
+  const mat = new THREE.MeshStandardMaterial({
+    color, roughness: 0.55, metalness: 0.1,
+    transparent: part.canCollide === false, opacity: part.canCollide === false ? 0.5 : 1
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.position.set(part.x || 0, part.y || 0, part.z || 0);
+  mesh.rotation.set(part.rx || 0, part.ry || 0, part.rz || 0);
+  mesh.userData.part = part;
+  mesh.visible = part.visible !== false;
+  return mesh;
+}
+
+export function buildSpawnMesh(obj) {
+  const geo = new THREE.CylinderGeometry(1, 1, 0.15, 20);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: '#6bffa0', emissive: '#6bffa0', emissiveIntensity: 0.4 }));
+  mesh.position.set(obj.x || 0, obj.y || 0, obj.z || 0);
+  return mesh;
+}
+
+// Local-space top-surface height sampler, per shape. Returns null where the
+// shape has no surface at that local (lx, lz) (e.g. outside a cylinder's
+// circular footprint).
+function localTopHeight(shape, lx, lz, sx, sy, sz) {
+  if (shape === 'sphere') {
+    const r = sx / 2;
+    const d2 = lx * lx + lz * lz;
+    if (d2 > r * r) return null;
+    return Math.sqrt(Math.max(0, r * r - d2));
+  }
+  if (shape === 'cylinder') {
+    const r = sx / 2;
+    if (lx * lx + lz * lz > r * r) return null;
+    return sy / 2;
+  }
+  if (shape === 'wedge') {
+    if (Math.abs(lx) > sx / 2 || lz < -sz / 2 || lz > sz / 2) return null;
+    const t = (lz + sz / 2) / sz; // 0 at back(high) .. 1 at front(low)
+    return sy / 2 - t * sy;
+  }
+  // box
+  if (Math.abs(lx) > sx / 2 || Math.abs(lz) > sz / 2) return null;
+  return sy / 2;
+}
+
+// Builds a world-space height grid for a part's top surface using the exact
+// same transform (position + full XYZ rotation) as buildPartMesh, so walking
+// collision matches what's rendered exactly instead of approximating it.
+export function buildPartHeightGrid(part, res) {
+  const sx = part.sx ?? 2, sy = part.sy ?? 2, sz = part.sz ?? 2;
+  res = res || (part.shape === 'sphere' || part.shape === 'cylinder' ? 9 : 5);
   const temp = new THREE.Object3D();
-  temp.position.set(obj.x || 0, obj.y || 0, obj.z || 0);
-  if (obj.ry) temp.rotation.y = obj.ry;
-  temp.rotation.x = RAMP_TILT;
+  temp.position.set(part.x || 0, part.y || 0, part.z || 0);
+  temp.rotation.set(part.rx || 0, part.ry || 0, part.rz || 0);
   temp.updateMatrixWorld(true);
-  const sx = obj.sx || 2, sy = obj.sy || 2, sz = obj.sz || 2;
+
   const grid = [];
   for (let j = 0; j < res; j++) {
     const row = [];
     for (let i = 0; i < res; i++) {
       const lx = -sx / 2 + (sx * i) / (res - 1);
       const lz = -sz / 2 + (sz * j) / (res - 1);
-      const p = new THREE.Vector3(lx, sy / 2, lz);
+      const ly = localTopHeight(part.shape, lx, lz, sx, sy, sz);
+      if (ly === null) { row.push(null); continue; }
+      const p = new THREE.Vector3(lx, ly, lz);
       temp.localToWorld(p);
       row.push(p);
     }
@@ -177,23 +231,28 @@ function pointInTriangleBary(px, pz, a, b, c) {
   const u = (dot11 * dot02 - dot01 * dot12) / denom;
   const v = (dot00 * dot12 - dot01 * dot02) / denom;
   if (u >= -0.01 && v >= -0.01 && u + v <= 1.01) {
-    // barycentric height using a,c,b weights matching u,v definition above
-    const w0 = 1 - u - v; // weight of a
+    const w0 = 1 - u - v;
     return a.y * w0 + c.y * u + b.y * v;
   }
   return null;
 }
 
-// Returns the ramp surface height at (worldX, worldZ), or null if outside the ramp footprint.
-export function queryRampHeight(grid, worldX, worldZ) {
+// Returns the part's surface height at (worldX, worldZ), or null if outside its footprint.
+export function queryPartHeight(grid, worldX, worldZ) {
   for (let j = 0; j < grid.length - 1; j++) {
     for (let i = 0; i < grid[j].length - 1; i++) {
       const a = grid[j][i], b = grid[j][i + 1], c = grid[j + 1][i], d = grid[j + 1][i + 1];
-      let h = pointInTriangleBary(worldX, worldZ, a, d, b);
-      if (h !== null) return h;
-      h = pointInTriangleBary(worldX, worldZ, a, c, d);
-      if (h !== null) return h;
+      if (a && b && d) { const h = pointInTriangleBary(worldX, worldZ, a, d, b); if (h !== null) return h; }
+      if (a && c && d) { const h = pointInTriangleBary(worldX, worldZ, a, c, d); if (h !== null) return h; }
     }
   }
   return null;
+}
+
+// Rotation-aware horizontal half-extent, used for the simple AABB side-blocking
+// check (approximation: uses the largest possible footprint radius so a
+// rotated part never lets you clip through a corner).
+export function boundingRadiusXZ(part) {
+  const sx = part.sx ?? 2, sy = part.sy ?? 2, sz = part.sz ?? 2;
+  return Math.sqrt(sx * sx + sy * sy + sz * sz) / 2;
 }

@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { buildTerrainMesh, buildObjectMesh, generateTerrain, flatTerrain, terrainHeightAt, OBJECT_TYPES } from './shared.js';
+import { buildTerrainMesh, buildPartMesh, buildSpawnMesh, generateTerrain, flatTerrain, terrainHeightAt, SHAPES, DEFAULT_PART_COLOR } from './shared.js';
 import { fetchMe, mountAuthWidget, onAuthChange, getUser, openAuthModal } from './auth.js';
 
 mountAuthWidget(document.getElementById('authSlot'));
@@ -68,7 +68,7 @@ function escapeHtml(s) { return String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;
 const SCALE = 2;
 let size = 48;
 let terrain = generateTerrain(size, 1234);
-let objects = []; // {id, type, x,y,z, sx,sy,sz, ry, color}
+let objects = []; // spawn markers + parts
 let nextId = 1;
 let currentTool = 'select';
 let placeType = null;
@@ -104,7 +104,7 @@ scene.add(sun);
 let terrainMesh = null;
 const objectGroup = new THREE.Group();
 scene.add(objectGroup);
-const objectMeshes = new Map(); // id -> group
+const objectMeshes = new Map();
 
 function rebuildTerrain() {
   if (terrainMesh) { scene.remove(terrainMesh); terrainMesh.geometry.dispose(); terrainMesh.material.dispose(); }
@@ -115,8 +115,8 @@ rebuildTerrain();
 
 function rebuildObject(obj) {
   const old = objectMeshes.get(obj.id);
-  if (old) { objectGroup.remove(old); }
-  const mesh = buildObjectMesh(obj);
+  if (old) objectGroup.remove(old);
+  const mesh = obj.type === 'spawn' ? buildSpawnMesh(obj) : buildPartMesh(obj);
   mesh.userData.id = obj.id;
   objectMeshes.set(obj.id, mesh);
   objectGroup.add(mesh);
@@ -128,7 +128,6 @@ function rebuildAllObjects() {
 }
 rebuildAllObjects();
 
-// selection highlight
 const selectBox = new THREE.BoxHelper(new THREE.Object3D(), 0xffffff);
 selectBox.visible = false;
 scene.add(selectBox);
@@ -199,6 +198,8 @@ document.getElementById('worldSize').addEventListener('change', e => {
 const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 let sculpting = false;
+let rotating = false;
+let lastPointerX = 0;
 
 function setPointer(e) {
   const rect = renderer.domElement.getBoundingClientRect();
@@ -228,6 +229,10 @@ renderer.domElement.addEventListener('pointerdown', e => {
   if (currentTool === 'raise' || currentTool === 'lower') {
     sculpting = true;
     controls.enabled = false;
+  } else if (currentTool === 'rotate' && selectedId) {
+    rotating = true;
+    lastPointerX = e.clientX;
+    controls.enabled = false;
   } else if (currentTool === 'place' && placeType) {
     const hit = raycaster.intersectObject(terrainMesh)[0];
     if (hit) {
@@ -241,7 +246,7 @@ renderer.domElement.addEventListener('pointerdown', e => {
     const hits = raycaster.intersectObjects(objectGroup.children, true);
     if (hits.length) {
       let o = hits[0].object;
-      while (o && !o.userData.id) o = o.parent;
+      while (o && o.userData.id === undefined) o = o.parent;
       selectedId = o ? o.userData.id : null;
     } else {
       selectedId = null;
@@ -249,40 +254,96 @@ renderer.domElement.addEventListener('pointerdown', e => {
     renderInspector();
   }
 });
-window.addEventListener('pointerup', () => { sculpting = false; controls.enabled = true; });
+window.addEventListener('pointerup', () => { sculpting = false; rotating = false; controls.enabled = true; });
 renderer.domElement.addEventListener('pointermove', e => {
-  if (!sculpting) return;
-  setPointer(e);
-  raycaster.setFromCamera(pointer, camera);
-  const hit = raycaster.intersectObject(terrainMesh)[0];
-  if (hit) {
-    sculptAt(hit.point.x, hit.point.z, currentTool === 'raise' ? 1 : -1);
-    rebuildTerrain();
+  if (sculpting) {
+    setPointer(e);
+    raycaster.setFromCamera(pointer, camera);
+    const hit = raycaster.intersectObject(terrainMesh)[0];
+    if (hit) {
+      sculptAt(hit.point.x, hit.point.z, currentTool === 'raise' ? 1 : -1);
+      rebuildTerrain();
+    }
+  } else if (rotating && selectedId) {
+    const obj = objects.find(o => o.id === selectedId);
+    if (obj && obj.type === 'part') {
+      const dx = e.clientX - lastPointerX;
+      lastPointerX = e.clientX;
+      const amount = dx * 0.01;
+      if (e.shiftKey) obj.rx = (obj.rx || 0) + amount;
+      else if (e.altKey) obj.rz = (obj.rz || 0) + amount;
+      else obj.ry = (obj.ry || 0) + amount;
+      rebuildObject(obj);
+      if (selectedId === obj.id) renderInspector();
+    }
   }
 });
 
 function makeDefaultObject(type, x, z) {
   const h = terrainHeightAt(terrain, SCALE, x, z);
-  const base = { id: nextId++, type, x, z, ry: 0, color: OBJECT_TYPES[type]?.color };
-  if (type === 'box') return { ...base, y: h + 1, sx: 2, sy: 2, sz: 2 };
-  if (type === 'ramp') return { ...base, y: h + 1, sx: 4, sy: 1.5, sz: 6 };
-  if (type === 'spawn') return { ...base, y: h + 0.1 };
-  if (type === 'coin') return { ...base, y: h + 1 };
-  if (type === 'killzone') return { ...base, y: h + 0.2, sx: 4, sy: 0.4, sz: 4 };
-  return { ...base, y: h + 1, sx: 2, sy: 2, sz: 2 };
+  if (type === 'spawn') return { id: nextId++, type: 'spawn', x, y: h + 0.1, z };
+  return {
+    id: nextId++, type: 'part', shape: 'box',
+    x, y: h + 1, z, sx: 2, sy: 2, sz: 2, rx: 0, ry: 0, rz: 0,
+    color: DEFAULT_PART_COLOR, canCollide: true, script: ''
+  };
 }
 
+// ---------- script templates ----------
+const SCRIPT_TEMPLATES = {
+  coin: "let taken = false;\npart.onTouch(() => {\n  if (taken) return;\n  taken = true;\n  game.player.giveCoin(1);\n  part.setVisible(false);\n  game.broadcast('taken', true);\n});\ngame.on('taken', (v) => {\n  if (v) { taken = true; part.setVisible(false); }\n});",
+  checkpoint: "part.onTouch(() => {\n  game.player.setCheckpoint();\n});",
+  killzone: "part.onTouch(() => {\n  game.player.respawn();\n});",
+  door: "let open = false;\npart.onTouch(() => {\n  open = !open;\n  part.setVisible(!open);\n  part.setCollidable(!open);\n  game.broadcast('open', open);\n});\ngame.on('open', (v) => {\n  open = v;\n  part.setVisible(!open);\n  part.setCollidable(!open);\n});",
+  teleport: "part.onTouch(() => {\n  game.player.teleport(0, 20, 0);\n});"
+};
+const CHEATSHEET_HTML = `
+<b>part</b>.position / .size / .rotation / .color / .visible / .collidable<br>
+<b>part</b>.moveTo(x,y,z) · .rotateTo(rx,ry,rz) · .setColor(hex)<br>
+<b>part</b>.setVisible(bool) · .setCollidable(bool) · .destroy()<br>
+<b>part</b>.onTouch(player => { ... })<br>
+<b>game.player</b>.giveCoin(n) · .teleport(x,y,z) · .respawn() · .setCheckpoint()<br>
+<b>game</b>.broadcast(name, data) — sync an event to all players<br>
+<b>game</b>.on(name, data => { ... }) — react to a broadcast (incl. late-join replay)<br>
+<b>game</b>.wait(seconds, () => { ... })
+`;
+
 // ---------- inspector ----------
-const SCRIPTABLE_TYPES = ['box', 'ramp'];
 function renderInspector() {
   const el = document.getElementById('inspector');
   const obj = objects.find(o => o.id === selectedId);
   if (!obj) { el.innerHTML = '<div class="no-select-msg">Nothing selected</div>'; return; }
-  const hasSize = obj.sx !== undefined;
-  const scriptable = SCRIPTABLE_TYPES.includes(obj.type);
-  const action = obj.script?.action || 'none';
+
+  if (obj.type === 'spawn') {
+    el.innerHTML = `
+      <div class="prop-title"><span class="swatch" style="background:#6bffa0"></span> Spawn Point</div>
+      <div class="field"><label>Position (x, y, z)</label>
+        <div class="row3">
+          <input type="number" step="0.5" id="px" value="${obj.x.toFixed(1)}">
+          <input type="number" step="0.5" id="py" value="${obj.y.toFixed(1)}">
+          <input type="number" step="0.5" id="pz" value="${obj.z.toFixed(1)}">
+        </div>
+      </div>
+      <button class="delete-btn" id="deleteObj">Delete</button>
+    `;
+    ['px','py','pz'].forEach(id => document.getElementById(id).addEventListener('input', () => {
+      obj.x = parseFloat(document.getElementById('px').value);
+      obj.y = parseFloat(document.getElementById('py').value);
+      obj.z = parseFloat(document.getElementById('pz').value);
+      rebuildObject(obj);
+    }));
+    document.getElementById('deleteObj').addEventListener('click', () => deleteSelected(obj));
+    return;
+  }
+
+  const deg = r => (r || 0) * 180 / Math.PI;
   el.innerHTML = `
-    <div class="prop-title"><span class="swatch" style="background:${obj.color}"></span> ${OBJECT_TYPES[obj.type]?.label || obj.type}</div>
+    <div class="prop-title"><span class="swatch" style="background:${obj.color}"></span> Part</div>
+    <div class="field"><label>Shape</label>
+      <select id="shape">
+        ${Object.entries(SHAPES).map(([k, v]) => `<option value="${k}" ${obj.shape===k?'selected':''}>${v.label}</option>`).join('')}
+      </select>
+    </div>
     <div class="field"><label>Position (x, y, z)</label>
       <div class="row3">
         <input type="number" step="0.5" id="px" value="${obj.x.toFixed(1)}">
@@ -290,79 +351,84 @@ function renderInspector() {
         <input type="number" step="0.5" id="pz" value="${obj.z.toFixed(1)}">
       </div>
     </div>
-    ${hasSize ? `
-    <div class="field"><label>Scale (x, y, z)</label>
+    <div class="field"><label>Size (x, y, z)</label>
       <div class="row3">
         <input type="number" step="0.5" min="0.2" id="sx" value="${obj.sx.toFixed(1)}">
         <input type="number" step="0.5" min="0.2" id="sy" value="${obj.sy.toFixed(1)}">
         <input type="number" step="0.5" min="0.2" id="sz" value="${obj.sz.toFixed(1)}">
       </div>
-    </div>` : ''}
-    <div class="field"><label>Rotation Y (radians)</label><input type="number" step="0.1" id="ry" value="${(obj.ry || 0).toFixed(2)}"></div>
-    <div class="field"><label>Color</label><input type="color" id="color" value="${obj.color}" style="width:100%;height:34px;padding:2px;"></div>
-    ${scriptable ? `
-    <div class="field"><label>Touch script</label>
-      <select id="scriptAction">
-        <option value="none" ${action==='none'?'selected':''}>None</option>
-        <option value="give_coin" ${action==='give_coin'?'selected':''}>Give a coin</option>
-        <option value="checkpoint" ${action==='checkpoint'?'selected':''}>Set as checkpoint</option>
-        <option value="teleport" ${action==='teleport'?'selected':''}>Teleport player</option>
-        <option value="toggle_door" ${action==='toggle_door'?'selected':''}>Toggle door (disappear/reappear)</option>
-      </select>
     </div>
-    ${action === 'teleport' ? `
-    <div class="field"><label>Teleport target (x, y, z)</label>
+    <div class="field"><label>Rotation °, (x, y, z) — or drag with the Rotate tool</label>
       <div class="row3">
-        <input type="number" step="0.5" id="tx" value="${(obj.script?.tx ?? obj.x).toFixed(1)}">
-        <input type="number" step="0.5" id="ty" value="${(obj.script?.ty ?? obj.y + 2).toFixed(1)}">
-        <input type="number" step="0.5" id="tz" value="${(obj.script?.tz ?? obj.z).toFixed(1)}">
+        <input type="number" step="5" id="rx" value="${deg(obj.rx).toFixed(0)}">
+        <input type="number" step="5" id="ry" value="${deg(obj.ry).toFixed(0)}">
+        <input type="number" step="5" id="rz" value="${deg(obj.rz).toFixed(0)}">
       </div>
-    </div>` : ''}
-    ` : ''}
+    </div>
+    <div class="field"><label>Color</label><input type="color" id="color" value="${obj.color}" style="width:100%;height:34px;padding:2px;"></div>
+    <div class="checkbox-row"><input type="checkbox" id="canCollide" ${obj.canCollide !== false ? 'checked' : ''}> Solid (blocks players)</div>
+    <div class="field">
+      <label>Script (JS) <select id="scriptTemplate" style="width:auto;float:right;font-size:11px;padding:2px 4px;">
+        <option value="">Insert template…</option>
+        <option value="coin">Coin pickup</option>
+        <option value="checkpoint">Checkpoint</option>
+        <option value="killzone">Kill zone</option>
+        <option value="door">Toggle door</option>
+        <option value="teleport">Teleporter</option>
+      </select></label>
+      <textarea class="script-editor" id="script" placeholder="part.onTouch(() => {\n  // your code here\n});" spellcheck="false">${escapeHtml(obj.script || '')}</textarea>
+      <div class="script-error" id="scriptError"></div>
+    </div>
+    <div class="cheatsheet">${CHEATSHEET_HTML}</div>
     <button class="delete-btn" id="deleteObj">Delete object</button>
   `;
   const apply = () => {
     obj.x = parseFloat(document.getElementById('px').value);
     obj.y = parseFloat(document.getElementById('py').value);
     obj.z = parseFloat(document.getElementById('pz').value);
-    if (hasSize) {
-      obj.sx = parseFloat(document.getElementById('sx').value);
-      obj.sy = parseFloat(document.getElementById('sy').value);
-      obj.sz = parseFloat(document.getElementById('sz').value);
-    }
-    obj.ry = parseFloat(document.getElementById('ry').value);
+    obj.sx = parseFloat(document.getElementById('sx').value);
+    obj.sy = parseFloat(document.getElementById('sy').value);
+    obj.sz = parseFloat(document.getElementById('sz').value);
+    obj.rx = parseFloat(document.getElementById('rx').value) * Math.PI / 180;
+    obj.ry = parseFloat(document.getElementById('ry').value) * Math.PI / 180;
+    obj.rz = parseFloat(document.getElementById('rz').value) * Math.PI / 180;
     obj.color = document.getElementById('color').value;
+    obj.canCollide = document.getElementById('canCollide').checked;
     rebuildObject(obj);
   };
-  ['px','py','pz','sx','sy','sz','ry','color'].forEach(id => {
-    const input = document.getElementById(id);
-    if (input) input.addEventListener('input', apply);
+  ['px','py','pz','sx','sy','sz','rx','ry','rz','color','canCollide'].forEach(id => {
+    document.getElementById(id).addEventListener('input', apply);
   });
-  const scriptSelect = document.getElementById('scriptAction');
-  if (scriptSelect) {
-    scriptSelect.addEventListener('change', () => {
-      const newAction = scriptSelect.value;
-      obj.script = newAction === 'none' ? undefined : { action: newAction };
-      renderInspector();
-    });
-  }
-  ['tx','ty','tz'].forEach(id => {
-    const input = document.getElementById(id);
-    if (input) input.addEventListener('input', () => {
-      obj.script = obj.script || { action: 'teleport' };
-      obj.script.tx = parseFloat(document.getElementById('tx').value);
-      obj.script.ty = parseFloat(document.getElementById('ty').value);
-      obj.script.tz = parseFloat(document.getElementById('tz').value);
-    });
+  document.getElementById('shape').addEventListener('change', e => {
+    obj.shape = e.target.value;
+    rebuildObject(obj);
   });
-  document.getElementById('deleteObj').addEventListener('click', () => {
-    objects = objects.filter(o => o.id !== obj.id);
-    const mesh = objectMeshes.get(obj.id);
-    if (mesh) objectGroup.remove(mesh);
-    objectMeshes.delete(obj.id);
-    selectedId = null;
-    renderInspector();
+  const scriptEl = document.getElementById('script');
+  const errEl = document.getElementById('scriptError');
+  scriptEl.addEventListener('input', () => {
+    obj.script = scriptEl.value;
+    try { new Function('part', 'game', obj.script); errEl.textContent = ''; }
+    catch (e) { errEl.textContent = 'Syntax error: ' + e.message; }
   });
+  document.getElementById('scriptTemplate').addEventListener('change', e => {
+    const key = e.target.value;
+    if (!key) return;
+    if (scriptEl.value.trim() && !confirm('Replace current script with this template?')) { e.target.value = ''; return; }
+    scriptEl.value = SCRIPT_TEMPLATES[key];
+    obj.script = scriptEl.value;
+    errEl.textContent = '';
+    e.target.value = '';
+  });
+  document.getElementById('deleteObj').addEventListener('click', () => deleteSelected(obj));
+}
+
+function deleteSelected(obj) {
+  objects = objects.filter(o => o.id !== obj.id);
+  const mesh = objectMeshes.get(obj.id);
+  if (mesh) objectGroup.remove(mesh);
+  objectMeshes.delete(obj.id);
+  selectedId = null;
+  renderInspector();
 }
 
 // ---------- publish ----------
@@ -384,6 +450,12 @@ async function doPublish() {
   const name = document.getElementById('gameName').value.trim();
   if (!name) { showToast('Give your game a name first', false); return; }
   if (!objects.some(o => o.type === 'spawn')) { showToast('Add at least one Spawn Point', false); return; }
+  for (const obj of objects) {
+    if (obj.type === 'part' && obj.script && obj.script.trim()) {
+      try { new Function('part', 'game', obj.script); }
+      catch (e) { showToast(`Script error in a part: ${e.message}`, false); return; }
+    }
+  }
   const payload = {
     name,
     description: document.getElementById('gameDesc').value.trim(),

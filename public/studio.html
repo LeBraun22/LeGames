@@ -28,6 +28,12 @@
   .field label { display: block; font-size: 11px; color: var(--text-dim); margin-bottom: 4px; }
   .field input[type=text], .field textarea, .field select { width: 100%; }
   .field textarea { resize: vertical; min-height: 50px; }
+  .script-editor { width: 100%; min-height: 160px; font-family: var(--mono); font-size: 12px; line-height: 1.5; resize: vertical; }
+  .checkbox-row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
+  .checkbox-row input { width: auto; }
+  .cheatsheet { background: var(--panel); border: 1px solid var(--panel-border); border-radius: 8px; padding: 10px; font-family: var(--mono); font-size: 11px; color: var(--text-dim); line-height: 1.6; margin-top: 8px; max-height: 160px; overflow-y: auto; }
+  .cheatsheet b { color: var(--accent); }
+  .script-error { color: var(--danger); font-size: 11px; font-family: var(--mono); margin-top: 6px; }
   .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px; }
   .row3 input { width: 100%; padding: 6px; font-size: 12px; }
   .range-row { display: flex; align-items: center; gap: 8px; }
@@ -83,12 +89,13 @@
         <button class="btn-ghost" id="flattenTerrain" style="width:100%;margin-top:6px;font-size:12px;padding:8px;">▁ Flatten</button>
       </div>
       <div class="tool-group">
-        <h4>Place object</h4>
-        <button class="tool-btn" data-place="box"><span class="swatch" style="background:#4fd1ff"></span> Block</button>
-        <button class="tool-btn" data-place="ramp"><span class="swatch" style="background:#ff8a4f"></span> Ramp</button>
+        <h4>Place</h4>
         <button class="tool-btn" data-place="spawn"><span class="swatch" style="background:#6bffa0"></span> Spawn Point</button>
-        <button class="tool-btn" data-place="coin"><span class="swatch" style="background:#ffd54f"></span> Coin</button>
-        <button class="tool-btn" data-place="killzone"><span class="swatch" style="background:#ff4f6d"></span> Kill Zone</button>
+        <button class="tool-btn" data-place="part"><span class="swatch" style="background:#4fd1ff"></span> Add Part</button>
+      </div>
+      <div class="tool-group">
+        <h4>Transform</h4>
+        <button class="tool-btn" data-tool="rotate">↻ Rotate (drag on part)</button>
       </div>
       <div class="tool-group">
         <h4>World</h4>
@@ -106,7 +113,7 @@
     <!-- CENTER: viewport -->
     <div id="viewport">
       <div class="brush-size" id="brushLabel" style="display:none;">Brush radius: <span id="brushVal">3</span></div>
-      <div class="hint">Drag = orbit · Scroll = zoom · Click terrain with Raise/Lower active to sculpt · Click ground with a Place tool active to drop an object</div>
+      <div class="hint">Drag = orbit · Scroll = zoom · Raise/Lower: click-drag terrain · Rotate: select a part, then drag (Shift=pitch, Alt=roll, plain=yaw) · Place: click the ground</div>
     </div>
 
     <!-- RIGHT: inspector + publish -->
